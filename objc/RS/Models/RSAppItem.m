@@ -31,6 +31,23 @@
     return [f stringFromByteCount:self.size];
 }
 
+/// 公告/通知/占位条目判定：
+/// 没有有效下载地址、或下载地址指向空/占位、或体积为 0 —— 都不当作可下载应用
+- (BOOL)isDownloadable {
+    if (self.downloadURL.length == 0) return NO;
+    NSString *s = [self.downloadURL lowercaseString];
+    // 占位地址
+    if ([s isEqualToString:@"#" ] || [s hasPrefix:@"javascript:"] ||
+        [s hasPrefix:@"about:"] || [s hasPrefix:@"tel:"] || [s hasPrefix:@"mailto:"]) {
+        return NO;
+    }
+    if (![s hasPrefix:@"http"]) return NO;
+    // 体积为 0 的一律视为不可下载（公告/通知就是这种）
+    if (self.size <= 0) return NO;
+    // 蓝奏云/中介页也可能是应用，只要有体积就放行
+    return YES;
+}
+
 - (BOOL)isDirectIPA {
     NSString *s = [self.downloadURL lowercaseString];
     // 蓝奏云等中转链接不算直链
