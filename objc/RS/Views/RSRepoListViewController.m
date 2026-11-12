@@ -1,26 +1,25 @@
 #import "RSRepoListViewController.h"
-#import "RSStore.h"
+#import "RSPopMenuView.h"
 #import "RSTheme.h"
-#import "RSIconView.h"
+#import "RSStore.h"
+#import "RSRepo.h"
 #import "RSRepoCell.h"
-#import "RSRepoDetailViewController.h"
 #import "RSAddRepoViewController.h"
+#import "RSRepoDetailViewController.h"
+#import "RSDownloadsViewController.h"
 #import "RSUnlockViewController.h"
 
 @interface RSRepoListViewController () <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, strong) UITableView *table;
 @property (nonatomic, strong) UIView *emptyView;
-@property (nonatomic, strong) UIRefreshControl *refreshCtrl;
+@property (nonatomic, strong) RSPopMenuView *popMenu;
+@property (nonatomic, assign) BOOL presentedFromEmptyButton;
 @end
 
 @implementation RSRepoListViewController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(onReposChanged)
-                                                 name:@"RSReposChanged"
-                                               object:nil];
     self.title = @"软件源";
     self.view.backgroundColor = [RSTheme bg];
 
@@ -32,33 +31,127 @@
     self.navigationController.navigationBar.standardAppearance = app;
     self.navigationController.navigationBar.scrollEdgeAppearance = app;
 
-    self.navigationItem.rightBarButtonItem =
-    [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
-                                                  target:self
-                                                  action:@selector(addTapped)];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
+                style:UIBarButtonItemStylePlain
+               target:self
+               action:@selector(menuTapped)];
+    self.navigationItem.rightBarButtonItem.tintColor = [UIColor whiteColor];
 
-    self.table = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStylePlain];
-    self.table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.table = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
+    self.table.translatesAutoresizingMaskIntoConstraints = NO;
     self.table.backgroundColor = [RSTheme bg];
     self.table.separatorStyle = UITableViewCellSeparatorStyleNone;
     self.table.dataSource = self;
     self.table.delegate = self;
     self.table.contentInset = UIEdgeInsetsMake(8, 0, 24, 0);
+    self.table.rowHeight = UITableViewAutomaticDimension;
+    self.table.estimatedRowHeight = 92;
     [self.table registerClass:[RSRepoCell class] forCellReuseIdentifier:@"repo"];
     [self.view addSubview:self.table];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.table.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+        [self.table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.table.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+    ]];
 
-    self.refreshCtrl = [UIRefreshControl new];
-    [self.refreshCtrl addTarget:self action:@selector(refreshAll) forControlEvents:UIControlEventValueChanged];
-    self.refreshCtrl.tintColor = [RSTheme accent];
-    [self.table addSubview:self.refreshCtrl];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(onReposChanged)
+                                                 name:@"RSReposChanged"
+                                               object:nil];
 
     [self buildEmptyView];
+    [self updateEmpty];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    [self.table reloadData];
-    [self updateEmpty];
+    // 回到列表页时，回收任何可能残留的弹出菜单遮罩，
+    // 防止"全屏透明遮罩没被移除 → 整个界面点不动"。
+    for (UIView *v in self.view.subviews) {
+        if ([v isKindOfClass:[RSPopMenuView class]]) {
+            [(RSPopMenuView *)v dismiss];
+        }
+    }
+    if (self.popMenu) {
+        [self.popMenu dismiss];
+        self.popMenu = nil;
+    }
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)buildEmptyView {
+    self.emptyView = [[UIView alloc] init];
+    self.emptyView.translatesAutoresizingMaskIntoConstraints = NO;
+    // 空态容器不拦截触摸，避免把整个屏幕点死
+    self.emptyView.backgroundColor = [UIColor clearColor];
+
+    UIImageView *icon = [[UIImageView alloc] initWithImage:
+        [UIImage systemImageNamed:@"square.stack.3d.up.slash"]];
+    icon.tintColor = [[UIColor whiteColor] colorWithAlphaComponent:0.22];
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    icon.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UILabel *title = [[UILabel alloc] init];
+    title.text = @"还没有软件源";
+    title.textColor = [UIColor whiteColor];
+    title.font = [UIFont boldSystemFontOfSize:20];
+    title.textAlignment = NSTextAlignmentCenter;
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UILabel *sub = [[UILabel alloc] init];
+    sub.text = @"添加一个源，开始浏览应用";
+    sub.textColor = [[UIColor whiteColor] colorWithAlphaComponent:0.5];
+    sub.font = [UIFont systemFontOfSize:15];
+    sub.textAlignment = NSTextAlignmentCenter;
+    sub.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+    [btn setTitle:@"添加软件源" forState:UIControlStateNormal];
+    [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    btn.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+    btn.backgroundColor = [RSTheme accent];
+    btn.layer.cornerRadius = 22;
+    btn.translatesAutoresizingMaskIntoConstraints = NO;
+    [btn addTarget:self action:@selector(addTapped) forControlEvents:UIControlEventTouchUpInside];
+
+    [self.emptyView addSubview:icon];
+    [self.emptyView addSubview:title];
+    [self.emptyView addSubview:sub];
+    [self.emptyView addSubview:btn];
+    [self.view addSubview:self.emptyView];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [self.emptyView.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor],
+        [self.emptyView.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor],
+        [self.emptyView.centerYAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.centerYAnchor],
+
+        // 垂直链必须有始有终，否则 emptyView 高度算不出来 → 按钮被压成 0 高度点不到
+        [icon.topAnchor constraintEqualToAnchor:self.emptyView.topAnchor],
+        [icon.centerXAnchor constraintEqualToAnchor:self.emptyView.centerXAnchor],
+        [icon.heightAnchor constraintEqualToConstant:72],
+        [icon.widthAnchor constraintEqualToConstant:72],
+
+        [title.topAnchor constraintEqualToAnchor:icon.bottomAnchor constant:18],
+        [title.centerXAnchor constraintEqualToAnchor:self.emptyView.centerXAnchor],
+        [title.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.emptyView.leadingAnchor constant:24],
+        [title.trailingAnchor constraintLessThanOrEqualToAnchor:self.emptyView.trailingAnchor constant:-24],
+
+        [sub.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:8],
+        [sub.centerXAnchor constraintEqualToAnchor:self.emptyView.centerXAnchor],
+        [sub.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.emptyView.leadingAnchor constant:24],
+        [sub.trailingAnchor constraintLessThanOrEqualToAnchor:self.emptyView.trailingAnchor constant:-24],
+
+        [btn.topAnchor constraintEqualToAnchor:sub.bottomAnchor constant:28],
+        [btn.centerXAnchor constraintEqualToAnchor:self.emptyView.centerXAnchor],
+        [btn.widthAnchor constraintEqualToConstant:168],
+        [btn.heightAnchor constraintEqualToConstant:44],
+        [btn.bottomAnchor constraintEqualToAnchor:self.emptyView.bottomAnchor],
+    ]];
 }
 
 - (void)onReposChanged {
@@ -66,107 +159,72 @@
     [self updateEmpty];
 }
 
-- (void)buildEmptyView {
-    UIView *v = [UIView new];
-    v.translatesAutoresizingMaskIntoConstraints = NO;
-
-    UIImageView *icon = [UIImageView new];
-    icon.translatesAutoresizingMaskIntoConstraints = NO;
-    icon.image = [UIImage systemImageNamed:@"square.stack.3d.up.fill"];
-    icon.tintColor = [RSTheme accent];
-    icon.contentMode = UIViewContentModeScaleAspectFit;
-
-    UILabel *title = [UILabel new];
-    title.translatesAutoresizingMaskIntoConstraints = NO;
-    title.text = @"还没有软件源";
-    title.font = [UIFont systemFontOfSize:19 weight:UIFontWeightBold];
-    title.textColor = [UIColor whiteColor];
-    title.textAlignment = NSTextAlignmentCenter;
-
-    UILabel *sub = [UILabel new];
-    sub.translatesAutoresizingMaskIntoConstraints = NO;
-    sub.text = @"添加一个源地址，就能浏览并下载里面的应用";
-    sub.font = [UIFont systemFontOfSize:13];
-    sub.textColor = [RSTheme textSub];
-    sub.textAlignment = NSTextAlignmentCenter;
-    sub.numberOfLines = 0;
-
-    UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
-    btn.translatesAutoresizingMaskIntoConstraints = NO;
-    [btn setTitle:@" 添加软件源" forState:UIControlStateNormal];
-    [btn setImage:[UIImage systemImageNamed:@"plus"] forState:UIControlStateNormal];
-    [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    btn.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
-    btn.tintColor = [UIColor whiteColor];
-    btn.backgroundColor = [RSTheme accent];
-    btn.layer.cornerRadius = 22;
-    btn.configuration = nil;
-    btn.contentEdgeInsets = UIEdgeInsetsMake(12, 20, 12, 20);
-    [btn addTarget:self action:@selector(addTapped) forControlEvents:UIControlEventTouchUpInside];
-
-    [v addSubview:icon];
-    [v addSubview:title];
-    [v addSubview:sub];
-    [v addSubview:btn];
-    [self.view addSubview:v];
-    self.emptyView = v;
-
-    [NSLayoutConstraint activateConstraints:@[
-        [v.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-        [v.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor constant:-40],
-        [v.widthAnchor constraintEqualToAnchor:self.view.widthAnchor constant:-60],
-
-        [icon.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
-        [icon.topAnchor constraintEqualToAnchor:v.topAnchor],
-        [icon.widthAnchor constraintEqualToConstant:70],
-        [icon.heightAnchor constraintEqualToConstant:70],
-
-        [title.topAnchor constraintEqualToAnchor:icon.bottomAnchor constant:16],
-        [title.leadingAnchor constraintEqualToAnchor:v.leadingAnchor],
-        [title.trailingAnchor constraintEqualToAnchor:v.trailingAnchor],
-
-        [sub.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:8],
-        [sub.leadingAnchor constraintEqualToAnchor:v.leadingAnchor],
-        [sub.trailingAnchor constraintEqualToAnchor:v.trailingAnchor],
-
-        [btn.topAnchor constraintEqualToAnchor:sub.bottomAnchor constant:22],
-        [btn.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
-        [btn.heightAnchor constraintEqualToConstant:44],
-
-        [v.bottomAnchor constraintEqualToAnchor:btn.bottomAnchor],
-    ]];
-}
-
 - (void)updateEmpty {
-    BOOL empty = [RSStore shared].repos.count == 0;
+    BOOL empty = ([RSStore shared].repos.count == 0);
     self.emptyView.hidden = !empty;
     self.table.hidden = empty;
 }
 
-#pragma mark - 操作
+#pragma mark - 菜单（微信式小气泡）
+
+- (void)menuTapped {
+    [self showMenuFromBarButton];
+}
+
+- (void)showMenuFromBarButton {
+    if (self.popMenu) { [self dismissMenu]; return; }
+
+    NSArray *items = @[
+        @{RSPopMenuItemKeyTitle: @"添加软件源", RSPopMenuItemKeySymbol: @"plus"},
+        @{RSPopMenuItemKeyTitle: @"下载",       RSPopMenuItemKeySymbol: @"arrow.down.circle"},
+    ];
+
+    // 锚点 = 导航栏底边（不依赖按钮视图，按钮矩形在系统里取不准，会飘）。
+    // 菜单从导航栏下方 6pt 展开，箭头对准右上角。
+    CGFloat vw = CGRectGetWidth(self.view.bounds);
+    CGFloat anchorY;
+    UINavigationBar *bar = self.navigationController.navigationBar;
+    if (bar && !bar.hidden && bar.window) {
+        CGRect r = [self.view convertRect:bar.frame
+                                   fromView:bar.superview ?: self.view];
+        anchorY = CGRectGetMaxY(r);
+    } else {
+        anchorY = self.view.safeAreaInsets.top > 0 ? self.view.safeAreaInsets.top : 88;
+    }
+    CGRect barRect = CGRectMake(vw - 44, anchorY, 44, 0);
+
+    __weak typeof(self) weakSelf = self;
+    self.popMenu = [RSPopMenuView showInView:self.view
+                                  anchorRect:barRect
+                                      items:items
+                                    handler:^(NSInteger index) {
+        __strong typeof(weakSelf) s = weakSelf;
+        if (!s) return;
+        if (index == 0) [s addTapped];
+        else if (index == 1) [s downloadsTapped];
+    }];
+
+}
+
+- (void)dismissMenu {
+    [self.popMenu dismiss];
+    self.popMenu = nil;
+}
 
 - (void)addTapped {
+    [self dismissMenu];
     RSAddRepoViewController *vc = [RSAddRepoViewController new];
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+    nav.modalPresentationStyle = UIModalPresentationPageSheet;
     [self presentViewController:nav animated:YES completion:nil];
 }
 
-- (void)refreshAll {
-    NSArray *repos = [[RSStore shared].repos copy];
-    if (repos.count == 0) {
-        [self.refreshCtrl endRefreshing];
-        return;
-    }
-    __block NSInteger remaining = repos.count;
-    for (RSRepo *r in repos) {
-        [[RSStore shared] refreshRepo:r completion:^(BOOL ok, NSString *err) {
-            remaining--;
-            if (remaining <= 0) {
-                [self.refreshCtrl endRefreshing];
-                [self.table reloadData];
-            }
-        }];
-    }
+- (void)downloadsTapped {
+    [self dismissMenu];
+    RSDownloadsViewController *vc = [RSDownloadsViewController new];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+    nav.modalPresentationStyle = UIModalPresentationPageSheet;
+    [self presentViewController:nav animated:YES completion:nil];
 }
 
 #pragma mark - Table
@@ -175,71 +233,79 @@
     return [RSStore shared].repos.count;
 }
 
-- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    return 88;
-}
-
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     RSRepoCell *cell = [tableView dequeueReusableCellWithIdentifier:@"repo" forIndexPath:indexPath];
-    RSRepo *repo = [RSStore shared].repos[indexPath.row];
-    [cell configureWithRepo:repo];
+    RSRepo *r = [RSStore shared].repos[indexPath.row];
+    [cell configureWithRepo:r];
     return cell;
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    RSRepo *repo = [RSStore shared].repos[indexPath.row];
+    RSRepo *r = [RSStore shared].repos[indexPath.row];
 
-    if (repo.requiresUnlock && !repo.isUnlocked) {
-        RSUnlockViewController *vc = [RSUnlockViewController new];
-        vc.repo = repo;
-        vc.modalPresentationStyle = UIModalPresentationPageSheet;
+    if (r.requiresUnlock && !r.isUnlocked) {
         __weak typeof(self) weakSelf = self;
-        vc.onUnlocked = ^{
-            __strong typeof(weakSelf) self = weakSelf;
-            if (!self) return;
-            // 解锁成功：刷新源并直接进入
-            [[RSStore shared] refreshRepo:repo completion:^(BOOL ok, NSString *err) {
-                [[NSNotificationCenter defaultCenter] postNotificationName:@"RSReposChanged" object:nil];
+        RSUnlockViewController *u = [RSUnlockViewController new];
+        u.repo = r;
+        u.onUnlocked = ^{
+            __strong typeof(weakSelf) s = weakSelf;
+            if (!s) return;
+            [[RSStore shared] refreshRepoByUID:r.uid completion:^(BOOL ok, NSString *err) {
+                __strong typeof(weakSelf) ss = weakSelf;
+                if (!ss) return;
+                RSRepoDetailViewController *dvc = [RSRepoDetailViewController new];
+                dvc.repo = r;
+                [ss.navigationController pushViewController:dvc animated:YES];
             }];
-            RSRepoDetailViewController *d = [RSRepoDetailViewController new];
-            d.repo = repo;
-            [self.navigationController pushViewController:d animated:YES];
         };
-        [self presentViewController:vc animated:YES completion:nil];
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:u];
+        [self presentViewController:nav animated:YES completion:nil];
         return;
     }
 
     RSRepoDetailViewController *vc = [RSRepoDetailViewController new];
-    vc.repo = repo;
+    vc.repo = r;
     [self.navigationController pushViewController:vc animated:YES];
 }
 
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
-trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
-    RSRepo *repo = [RSStore shared].repos[indexPath.row];
-
+    trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
+    RSRepo *r = [RSStore shared].repos[indexPath.row];
+    __weak typeof(self) weakSelf = self;
     UIContextualAction *del = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive
-                                                                      title:@"删除"
-                                                                    handler:^(UIContextualAction *a, UIView *v, void (^done)(BOOL)) {
-        [[RSStore shared] removeRepo:repo];
-        [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
-        [self updateEmpty];
-        done(YES);
+                                                                     title:@"删除"
+                                                                   handler:^(UIContextualAction *a, UIView *v, void (^done)(BOOL)) {
+        __strong typeof(weakSelf) s = weakSelf;
+        @try {
+            [[RSStore shared] removeRepo:r];
+        } @catch (NSException *e) {
+            NSLog(@"[RepoList] 删除源异常: %@", e);
+        } @finally {
+            if (s) [s onReposChanged];
+            done(YES);
+        }
     }];
-    del.backgroundColor = [UIColor colorWithRed:1 green:0.27 blue:0.27 alpha:1];
+    del.backgroundColor = [UIColor colorWithRed:0.85 green:0.22 blue:0.25 alpha:1];
+    return [UISwipeActionsConfiguration configurationWithActions:@[del]];
+}
 
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
+    leadingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
+    RSRepo *r = [RSStore shared].repos[indexPath.row];
+    __weak typeof(self) weakSelf = self;
     UIContextualAction *refresh = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal
-                                                                          title:@"刷新"
-                                                                        handler:^(UIContextualAction *a, UIView *v, void (^done)(BOOL)) {
-        [[RSStore shared] refreshRepo:repo completion:^(BOOL ok, NSString *err) {
-            [tableView reloadData];
+                                                                         title:@"刷新"
+                                                                       handler:^(UIContextualAction *a, UIView *v, void (^done)(BOOL)) {
+        __strong typeof(weakSelf) s = weakSelf;
+        [[RSStore shared] refreshRepoByUID:r.uid completion:^(BOOL ok, NSString *err) {
+            __strong typeof(weakSelf) ss = weakSelf;
+            if (ss) [ss onReposChanged];
             done(ok);
         }];
     }];
     refresh.backgroundColor = [RSTheme accent];
-
-    return [UISwipeActionsConfiguration configurationWithActions:@[del, refresh]];
+    return [UISwipeActionsConfiguration configurationWithActions:@[refresh]];
 }
 
 @end
