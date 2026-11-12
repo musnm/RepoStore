@@ -1,108 +1,96 @@
 # RepoStore
 
-一个用 SwiftUI 写的 iOS 软件源客户端。添加一个 JSON 源地址，就能浏览源里的应用、下载 IPA，并通过系统分享面板保存或用其他 App 打开。
+iOS 第三方软件源客户端（Objective-C + UIKit），支持自定义 JSON 源、ESign 加密源、解锁码、IPA 下载与 TrollStore 安装。
+
+> 当前实现语言为 **Objective-C**（早前的 SwiftUI 版本已不在主分支）。
 
 ## 功能
 
-- **源管理** —— 添加 / 删除 / 刷新
-- **解锁码** —— 源可要求解锁码；支持本地内置卡密比对，也支持远程 `unlockURL` 校验拿 token
-- **应用浏览** —— 列表 / 网格两种视图、搜索、图标远程加载（失败自动渐变色兜底）
-- **下载** —— 实时进度、失败重试
-- **保存与打开** —— 下载完成弹出系统分享面板（存储到文件 / 用其他 App 打开 / 发送），另有一键 TrollStore 按钮
-- **离线缓存** —— 源与应用列表本地持久化
+- **自定义源**：粘贴 JSON 源地址即可添加，兼容「轻松签 / 全能签」的 `Source.json` 字段。
+- **加密源**：识别 `source[base64]`（ESign）、含 `[K$]`/`[M$]` 分隔的、以及普通 base64 源。**注意**：ESign 解密需要自备密钥头文件（见下方「构建」）。
+- **解锁码**：完全由源自己声明的 `unlockURL` 决定，App 不内置任何卡密；解锁后令牌随请求头 `Authorization` / `X-Unlock-Token` 透传。
+- **下载管理**：后台下载、实时进度、断点续传、取消清理、下载记录持久化。
+- **安装 / 分享**：分享面板（已剔除 AirDrop，规避 TrollStore 签名应用在 AirDrop 图标渲染时的崩溃）、`apple-magnifier://` 直装。
+- **自适应布局**：列表行、操作卡片均按内容自动撑高，隐藏控件会折叠掉占位高度。
 
-## 源格式
+## 目录
 
-一个源就是一个 JSON 文件（任何静态托管都能放：GitHub Pages / Cloudflare Pages / VPS）：
-
-```json
-{
-  "name": "我的源",
-  "identifier": "com.you.repo",
-  "subtitle": "一句话介绍",
-  "iconURL": "https://example.com/icon.png",
-  "requiresUnlock": true,
-  "unlockURL": "https://example.com/api/unlock",
-  "apps": [
-    {
-      "name": "示例应用",
-      "bundleIdentifier": "com.example.app",
-      "version": "1.0.0",
-      "size": 12345678,
-      "iconURL": "https://example.com/app.png",
-      "downloadURL": "https://example.com/app.ipa",
-      "description": "应用简介",
-      "developer": "作者",
-      "category": "工具"
-    }
-  ]
-}
 ```
-
-字段兼容：`apps` / `packages` / `items` 三种数组名都识别；`bundleIdentifier` / `bundleid` / `bundleID`、`iconURL` / `icon`、`downloadURL` / `url` 都自动匹配。
-
-### 解锁流程
-
-1. 拉取源时若返回 401/403，或 JSON 里 `requiresUnlock: true`，App 显示锁定界面
-2. 用户输入解锁码
-3. 若有 `unlockURL`，POST 下面的 JSON 过去：
-
-   ```json
-   { "code": "xxxx", "repo": "...", "identifier": "...", "device": "iPhone14,2", "os": "16.1.2" }
-   ```
-
-   期望返回：
-
-   ```json
-   { "ok": true, "token": "xxxx" }
-   ```
-
-   之后拉取源会带上请求头 `X-Unlock-Token: <token>`
-
-4. 若没有 `unlockURL`，与 App 内置卡密表比对（见 `RepoStore/Services/UnlockService.swift` 里的 `localCodes`）
-
-远程校验失败会自动回落到本地比对。
+objc/
+├── build.sh                  # Theos 交叉编译脚本（Linux / Alpine）
+├── ent_ts.plist              # TrollStore 伪签名 entitlements
+├── entitlements.plist        # 普通伪签名 entitlements
+├── RS/
+│   ├── RSAppDelegate.{h,m}   # 入口
+│   ├── main.m
+│   ├── Models/
+│   │   ├── RSAppItem.{h,m}   # 应用条目（含 isDownloadable 判定）
+│   │   ├── RSRepo.{h,m}      # 源
+│   │   └── RSDeobfuscator.*  # ESign / Base64 源解码
+│   ├── Services/
+│   │   ├── RSStore.{h,m}     # 源持久化、刷新、下载、进度
+│   │   ├── RSTheme.{h,m}     # 配色与渐变
+│   │   ├── RSUnlockService.* # 解锁码校验（远程）
+│   │   └── RSInstallService.*# 分享 / TrollStore 安装
+│   └── Views/
+│       ├── RSRepoListViewController.m   # 源列表 + 气泡菜单
+│       ├── RSRepoDetailViewController.m # 源内应用列表
+│       ├── RSAppDetailViewController.m  # 详情 + 下载
+│       ├── RSDownloadsViewController.m  # 下载管理
+│       ├── RSUnlockViewController.m     # 解锁
+│       ├── RSAddRepoViewController.m    # 添加源
+│       ├── RSPopMenuView.{h,m}          # 气泡菜单组件
+│       ├── RSRepoCell.m / RSAppCell.m
+│       └── RSIconView.{h,m}
+└── RS/Resources/             # Info.plist、Assets.xcassets
+```
 
 ## 构建
 
-本仓库用 GitHub Actions 自动构建 **unsigned IPA**（`.github/workflows/build.yml`）：
+依赖：
 
-1. push 到 `main`，或在 Actions 页面手动触发 `Build IPA`
-2. 构建完成后在 Artifact 里下载 `RepoStore-ipa`
+- Theos 工具链（`arm64-apple-darwin14-clang`）与 iPhoneOS SDK
+- `ldid`（伪签名）
 
-工作流会：
+**必须先自备 `objc/RS/Models/RSEsignKey.h`**，它包含第三方 ESign 解密密钥表，出于授权原因未随仓库分发。缺该文件时 `RSDeobfuscator.m` 会被跳过编译，ESign 加密源不可用，其余功能不受影响。
 
-- 用 XcodeGen 生成工程
-- `xcodebuild` 无签名编译（arm64）
-- 打包成 `Payload/RepoStore.app` → `RepoStore.ipa`
-- 用 `ldid -S` 伪签名，方便 TrollStore 直接安装
+该头文件需提供：
 
-下载的 IPA 可以用 TrollStore 安装，或用自签证书签名后安装。
-
-## 本地开发
-
-```bash
-brew install xcodegen
-xcodegen generate
-open RepoStore.xcodeproj
+```objc
+extern const unsigned char rs_esign_key[];
+#define RS_ESIGN_KEY_LEN  /* key 字节数 */
 ```
 
-需要 Xcode 15+，部署目标 iOS 16.0。
+参考实现：Nyasami/Ksign — `AltSourceKit/Utilities/Key/EsignSourceKey.swift`
 
-## 目录结构
+然后：
 
-```
-RepoStore/
-├── Models/          Repo.swift, AppItem.swift
-├── Services/        RepoService / UnlockService / InstallService / Store / Theme
-├── Views/           RootView / RepoDetailView / AppDetailView / UnlockSheet
-│                    AddRepoView / SettingsView / AppIconView
-├── Info.plist
-└── RepoStoreApp.swift
+```sh
+cd objc
+sh build.sh
+# 产物：objc/build/RepoStore.ipa
 ```
 
-## 注意
+## 源格式
 
-- `NSAppTransportSecurity` 开了 `NSAllowsArbitraryLoads`，方便放 http 源。只用 https 的话建议关掉。
-- 自签证书可能被苹果吊销（掉签），重要数据请先备份。
-- 请只用于你自己有权使用的应用。
+见 `example-repo.json`。关键字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `name` | 应用名（必填） |
+| `bundleIdentifier` | Bundle ID |
+| `downloadURL` | IPA 地址（必填，且 `size > 0` 才视为可下载） |
+| `version` / `versionDate` | 版本 |
+| `size` | 字节数 |
+| `iconURL` | 图标 |
+| `localizedDescription` | 简介（可内含 `分类：xxx`） |
+| `developerName` | 开发者 |
+| `tintColor` | 十六进制主色，如 `5B7CFA` |
+
+源级字段：`name`、`identifier`、`subtitle`、`iconURL`、`tintColor`、`requiresUnlock`、`unlockURL`、`apps[]`。
+
+`size` 为 0 或 `downloadURL` 为空的条目会被识别为公告 / 通知，界面上不提供下载。
+
+## 许可
+
+仅供学习交流。请勿用于分发侵犯版权的内容。
