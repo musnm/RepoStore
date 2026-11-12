@@ -102,17 +102,23 @@ final class Store: ObservableObject {
 
     // MARK: 下载
     func download(_ item: AppItem) {
-        downloads[item.id] = .downloading(progress: 0)
-        Task {
+        let key = item.id
+        downloads[key] = .downloading(progress: 0)
+        Task { [weak self] in
+            guard let self else { return }
             do {
                 let url = try await RepoService.shared.download(item) { p in
-                    Task { @MainActor in
-                        self.downloads[item.id] = .downloading(progress: p)
+                    Task { @MainActor [weak self] in
+                        self?.downloads[key] = .downloading(progress: p)
                     }
                 }
-                self.downloads[item.id] = .finished(url)
+                await MainActor.run {
+                    self.downloads[key] = .finished(url)
+                }
             } catch {
-                self.downloads[item.id] = .failed(error.localizedDescription)
+                await MainActor.run {
+                    self.downloads[key] = .failed(error.localizedDescription)
+                }
             }
         }
     }
