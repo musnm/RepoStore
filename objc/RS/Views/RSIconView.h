@@ -2,12 +2,12 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// 圆角图标视图：给定 URL 就异步加载，否则用 seed 生成色彩底色 + 首字母
+/// 应用图标：远程加载，失败时渐变+首字母
 @interface RSIconView : UIView
 
-- (void)configureWithURL:(nullable NSString *)url
-                    seed:(nullable NSString *)seed
-              cornerRadius:(CGFloat)radius;
+- (void)configureWithURL:(nullable NSString *)urlString
+                    seed:(NSString *)seed
+                cornerRadius:(CGFloat)corner;
 
 @end
 
