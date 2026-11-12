@@ -1,39 +1,56 @@
 #import "RSStore.h"
-#import "RSUnlockService.h"
 #import "RSDeobfuscator.h"
-#import <UIKit/UIKit.h>
+#import "RSUnlockService.h"
 
-static NSString *const kSaveKey = @"repostore.repos.v2";
+NSString *const RSDownloadsChangedNotification = @"RSDownloadsChangedNotification";
+
+@implementation RSDownloadRecord
+@end
 
 @interface RSStore ()
 @property (nonatomic, strong) NSMutableArray<RSRepo *> *mutableRepos;
-@property (nonatomic, strong) NSURLSession *session;
+@property (nonatomic, strong) NSMutableArray<RSDownloadRecord *> *records;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *progressMap;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSURL *> *finishedMap;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSURLSessionDownloadTask *> *taskMap;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, void (^)(double)> *progressObservers;
-- (NSString *)cacheDir;
+// taskIdentifier → itemId
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *taskItemMap;
+// 暂停：itemId → resumeData
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSData *> *resumeDataMap;
+@property (nonatomic, strong) NSMutableSet<NSString *> *pausedSet;
+@property (nonatomic, strong) NSURLSession *session;
 @end
 
 @implementation RSStore
 
 + (instancetype)shared {
-    static RSStore *inst = nil;
+    static RSStore *s;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ inst = [[RSStore alloc] init]; });
-    return inst;
+    dispatch_once(&once, ^{ s = [RSStore new]; });
+    return s;
 }
 
 - (instancetype)init {
-    if (self = [super init]) {
+    if ((self = [super init])) {
         _mutableRepos = [NSMutableArray array];
+        _records = [NSMutableArray array];
         _progressMap = [NSMutableDictionary dictionary];
         _finishedMap = [NSMutableDictionary dictionary];
+        _taskMap = [NSMutableDictionary dictionary];
         _progressObservers = [NSMutableDictionary dictionary];
+        _taskItemMap = [NSMutableDictionary dictionary];
+        _resumeDataMap = [NSMutableDictionary dictionary];
+        _pausedSet = [NSMutableSet set];
+
         NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration defaultSessionConfiguration];
-        cfg.timeoutIntervalForRequest = 25;
-        cfg.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+        cfg.timeoutIntervalForRequest = 30;
+        cfg.timeoutIntervalForResource = 600;
+        cfg.HTTPMaximumConnectionsPerHost = 4;
         _session = [NSURLSession sessionWithConfiguration:cfg];
+
         [self load];
+        [self loadRecords];
     }
     return self;
 }
@@ -44,25 +61,19 @@ static NSString *const kSaveKey = @"repostore.repos.v2";
 
 #pragma mark - 持久化
 
-- (NSURL *)storeFileURL {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSURL *dir = [[fm URLsForDirectory:NSApplicationSupportDirectory
-                             inDomains:NSUserDomainMask] firstObject];
-    [fm createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:nil];
+- (NSURL *)storeURL {
+    NSURL *dir = [[NSFileManager defaultManager] URLsForDirectory:NSApplicationSupportDirectory
+                                                        inDomains:NSUserDomainMask].firstObject;
+    [[NSFileManager defaultManager] createDirectoryAtURL:dir
+                             withIntermediateDirectories:YES attributes:nil error:nil];
     return [dir URLByAppendingPathComponent:@"repos.json"];
 }
 
 - (void)load {
-    NSData *data = [NSData dataWithContentsOfURL:[self storeFileURL]];
-    if (!data) {
-        data = [[NSUserDefaults standardUserDefaults] objectForKey:kSaveKey];
-    }
+    NSData *data = [NSData dataWithContentsOfURL:[self storeURL]];
     if (!data) return;
-
     id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     if (![obj isKindOfClass:[NSArray class]]) return;
-
-    [self.mutableRepos removeAllObjects];
     for (id d in (NSArray *)obj) {
         if (![d isKindOfClass:[NSDictionary class]]) continue;
         RSRepo *r = [RSRepo fromDictionary:d];
@@ -76,47 +87,10 @@ static NSString *const kSaveKey = @"repostore.repos.v2";
         [arr addObject:[r toDictionary]];
     }
     NSData *data = [NSJSONSerialization dataWithJSONObject:arr options:0 error:nil];
-    if (!data) return;
-    [data writeToURL:[self storeFileURL] atomically:YES];
-    [[NSUserDefaults standardUserDefaults] setObject:data forKey:kSaveKey];
+    if (data) [data writeToURL:[self storeURL] atomically:YES];
 }
 
 #pragma mark - 源管理
-
-- (RSRepo *)addRepoWithURL:(NSString *)url {
-    NSString *u = [url stringByTrimmingCharactersInSet:
-                   [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (u.length == 0) return nil;
-    if (![u.lowercaseString hasPrefix:@"http"]) {
-        u = [@"https://" stringByAppendingString:u];
-    }
-    for (RSRepo *r in self.mutableRepos) {
-        if ([r.url isEqualToString:u]) {
-            return r;
-        }
-    }
-    RSRepo *repo = [[RSRepo alloc] initWithURL:u];
-    [self.mutableRepos addObject:repo];
-    [self save];
-    return repo;
-}
-
-- (void)addRepoWithURL:(NSString *)url autoRefresh:(BOOL)refresh {
-    RSRepo *repo = [self addRepoWithURL:url];
-    if (!repo) return;
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"RSReposChanged" object:nil];
-    if (refresh) {
-        [self refreshRepo:repo completion:^(BOOL ok, NSString *err) {
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"RSReposChanged" object:nil];
-        }];
-    }
-}
-
-- (void)removeRepo:(RSRepo *)repo {
-    if (!repo) return;
-    [self.mutableRepos removeObject:repo];
-    [self save];
-}
 
 - (RSRepo *)repoWithUID:(NSString *)uid {
     for (RSRepo *r in self.mutableRepos) {
@@ -125,45 +99,74 @@ static NSString *const kSaveKey = @"repostore.repos.v2";
     return nil;
 }
 
+- (RSRepo *)addRepoWithURL:(NSString *)url {
+    NSString *u = [url stringByTrimmingCharactersInSet:
+                   [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (u.length == 0) return nil;
+
+    for (RSRepo *r in self.mutableRepos) {
+        if ([r.url isEqualToString:u]) return r;
+    }
+
+    RSRepo *repo = [[RSRepo alloc] initWithURL:u];
+    [self.mutableRepos insertObject:repo atIndex:0];
+    [self save];
+    return repo;
+}
+
+- (void)addRepoWithURL:(NSString *)url autoRefresh:(BOOL)refresh {
+    RSRepo *r = [self addRepoWithURL:url];
+    if (r && refresh) {
+        [self refreshRepo:r completion:nil];
+    }
+}
+
+- (void)removeRepo:(RSRepo *)repo {
+    if (!repo) return;
+    // 清理属主是该源的所有下载中任务 / 记录
+    NSMutableArray *ids = [NSMutableArray array];
+    for (RSAppItem *a in repo.apps) {
+        if (a.itemId.length) [ids addObject:a.itemId];
+    }
+    for (NSString *iid in ids) {
+        [self cancelDownloadForItemId:iid];
+    }
+    [self.mutableRepos removeObject:repo];
+    [self save];
+}
+
 #pragma mark - 刷新
 
-- (void)refreshRepo:(RSRepo *)repo completion:(void (^)(BOOL ok, NSString * _Nullable err))completion {
-    if (!repo) { if (completion) completion(NO, @"源不存在"); return; }
-
+- (void)refreshRepo:(RSRepo *)repo
+         completion:(void (^)(BOOL, NSString * _Nullable))completion {
+    if (!repo || repo.url.length == 0) {
+        if (completion) completion(NO, @"源地址为空");
+        return;
+    }
     NSURL *u = [NSURL URLWithString:repo.url];
-    if (!u) { if (completion) completion(NO, @"源地址无效"); return; }
-
-    // 内联/本地源：直接读文件
-    if (u.isFileURL) {
-        NSData *body = [NSData dataWithContentsOfURL:u];
-        NSDictionary *parsed = [self parseSourceBody:body repo:repo];
-        if (!parsed) {
-            repo.lastError = @"本地源解析失败";
-            if (completion) completion(NO, repo.lastError);
-            return;
-        }
-        NSInteger n = [repo applyJSON:parsed];
-        repo.lastUpdated = [NSDate date];
-        repo.lastError = nil;
-        [self save];
-        if (completion) completion(YES, n > 0 ? nil : @"源里没有应用");
+    if (!u) {
+        if (completion) completion(NO, @"源地址无效");
         return;
     }
 
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:u];
-    [req setValue:@"Mozilla/5.0 (iPhone; CPU iPhone OS 16_1_2 like Mac OS X) AppleWebKit/605.1.15 RepoStore/1.0"
+    req.timeoutInterval = 25;
+    [req setValue:@"Mozilla/5.0 (iPhone; CPU iPhone OS 16_1_2 like Mac OS X) AppleWebKit/605.1.15"
         forHTTPHeaderField:@"User-Agent"];
-    [req setValue:@"application/json, text/plain, */*" forHTTPHeaderField:@"Accept"];
     if (repo.unlockToken.length) {
         [req setValue:repo.unlockToken forHTTPHeaderField:@"X-Unlock-Token"];
         [req setValue:repo.unlockToken forHTTPHeaderField:@"Authorization"];
     }
 
-    NSURLSessionDataTask *task = [self.session dataTaskWithRequest:req
-                                                completionHandler:^(NSData *data,
-                                                                    NSURLResponse *resp,
-                                                                    NSError *err) {
+    __weak typeof(self) weakSelf = self;
+    NSURLSessionDataTask *task =
+    [self.session dataTaskWithRequest:req
+                    completionHandler:^(NSData *data,
+                                        NSURLResponse *resp,
+                                        NSError *err) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
             if (err) {
                 repo.lastError = err.localizedDescription;
                 if (completion) completion(NO, err.localizedDescription);
@@ -188,6 +191,13 @@ static NSString *const kSaveKey = @"repostore.repos.v2";
             }
 
             NSData *body = data ?: [NSData data];
+            // 处理 UTF-8 BOM
+            if (body.length >= 3) {
+                const unsigned char *b = body.bytes;
+                if (b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF) {
+                    body = [body subdataWithRange:NSMakeRange(3, body.length - 3)];
+                }
+            }
 
             // ① 先按普通 JSON 解析
             NSDictionary *parsed = [self parseSourceBody:body repo:repo];
@@ -218,7 +228,9 @@ static NSString *const kSaveKey = @"repostore.repos.v2";
                 return;
             }
 
-            NSInteger n = [repo applyJSON:parsed];
+            id obj = parsed;
+
+            NSInteger n = [repo applyJSON:(NSDictionary *)obj];
             repo.lastUpdated = [NSDate date];
             repo.lastError = nil;
             [self save];
@@ -290,13 +302,123 @@ static NSString *const kSaveKey = @"repostore.repos.v2";
 
 #pragma mark - 下载
 
-- (NSString *)cacheDir {
+/// 下载目录：Documents/Downloads（不会被系统自动清理）
+- (NSString *)downloadsDir {
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSURL *c = [[fm URLsForDirectory:NSCachesDirectory
+    NSURL *d = [[fm URLsForDirectory:NSDocumentDirectory
                            inDomains:NSUserDomainMask] firstObject];
-    NSURL *dir = [c URLByAppendingPathComponent:@"Downloads" isDirectory:YES];
+    NSURL *dir = [d URLByAppendingPathComponent:@"Downloads" isDirectory:YES];
     [fm createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:nil];
     return dir.path;
+}
+
+/// 兼容旧版缓存目录
+- (NSString *)cacheDir {
+    return [self downloadsDir];
+}
+
+- (NSURL *)recordsFileURL {
+    NSURL *dir = [[NSFileManager defaultManager] URLsForDirectory:NSApplicationSupportDirectory
+                                                        inDomains:NSUserDomainMask].firstObject;
+    [[NSFileManager defaultManager] createDirectoryAtURL:dir
+                             withIntermediateDirectories:YES attributes:nil error:nil];
+    return [dir URLByAppendingPathComponent:@"downloads.json"];
+}
+
+- (void)loadRecords {
+    NSData *data = [NSData dataWithContentsOfURL:[self recordsFileURL]];
+    if (!data) return;
+    id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![obj isKindOfClass:[NSArray class]]) return;
+    self.records = [NSMutableArray array];
+    for (id d in (NSArray *)obj) {
+        if (![d isKindOfClass:[NSDictionary class]]) continue;
+        NSDictionary *x = (NSDictionary *)d;
+        RSDownloadRecord *r = [RSDownloadRecord new];
+        r.itemId    = x[@"itemId"] ?: @"";
+        r.name      = x[@"name"] ?: @"";
+        r.version   = x[@"version"] ?: @"";
+        r.sizeText  = x[@"sizeText"] ?: @"";
+        r.iconURL   = x[@"iconURL"] ?: @"";
+        r.fileName  = x[@"fileName"] ?: @"";
+        r.filePath  = x[@"filePath"] ?: @"";
+        r.finished  = [x[@"finished"] boolValue];
+        if (x[@"finishedAt"]) {
+            r.finishedAt = [NSDate dateWithTimeIntervalSince1970:[x[@"finishedAt"] doubleValue]];
+        }
+        // 文件已不存在则标记为未完成（避免展示死链）
+        if (r.finished && r.filePath.length &&
+            ![[NSFileManager defaultManager] fileExistsAtPath:r.filePath]) {
+            r.finished = NO;
+        }
+        if (r.itemId.length) [self.records addObject:r];
+    }
+}
+
+- (void)saveRecords {
+    NSMutableArray *arr = [NSMutableArray array];
+    for (RSDownloadRecord *r in self.records) {
+        NSMutableDictionary *d = [NSMutableDictionary dictionary];
+        d[@"itemId"]   = r.itemId ?: @"";
+        d[@"name"]     = r.name ?: @"";
+        d[@"version"]  = r.version ?: @"";
+        d[@"sizeText"] = r.sizeText ?: @"";
+        d[@"iconURL"]  = r.iconURL ?: @"";
+        d[@"fileName"] = r.fileName ?: @"";
+        d[@"filePath"] = r.filePath ?: @"";
+        d[@"finished"] = @(r.finished);
+        if (r.finishedAt) d[@"finishedAt"] = @(r.finishedAt.timeIntervalSince1970);
+        [arr addObject:d];
+    }
+    NSData *data = [NSJSONSerialization dataWithJSONObject:arr options:0 error:nil];
+    if (data) [data writeToURL:[self recordsFileURL] atomically:YES];
+}
+
+- (nullable RSDownloadRecord *)recordForItemId:(NSString *)itemId {
+    for (RSDownloadRecord *r in self.records) {
+        if ([r.itemId isEqualToString:itemId]) return r;
+    }
+    return nil;
+}
+
+- (NSArray<RSDownloadRecord *> *)downloadRecords {
+    // 下载中在前，其次按完成时间倒序
+    NSMutableArray *downloading = [NSMutableArray array];
+    NSMutableArray *done = [NSMutableArray array];
+    for (RSDownloadRecord *r in self.records) {
+        if (r.finished) [done addObject:r];
+        else [downloading addObject:r];
+    }
+    [done sortUsingComparator:^NSComparisonResult(RSDownloadRecord *a, RSDownloadRecord *b) {
+        return [b.finishedAt ?: [NSDate distantPast] compare:a.finishedAt ?: [NSDate distantPast]];
+    }];
+    NSMutableArray *out = [NSMutableArray arrayWithArray:downloading];
+    [out addObjectsFromArray:done];
+    return out;
+}
+
+- (double)currentProgressForItemId:(NSString *)itemId {
+    if (!itemId) return -1;
+    NSNumber *n = nil;
+    @synchronized (self.progressMap) {
+        n = [self.progressMap objectForKey:itemId];
+    }
+    return n ? n.doubleValue : -1;
+}
+
+- (BOOL)isDownloadingItemId:(NSString *)itemId {
+    return [self.progressMap objectForKey:itemId] != nil;
+}
+
+- (void)removeDownloadRecord:(RSDownloadRecord *)record {
+    if (!record) return;
+    if (record.filePath.length) {
+        [[NSFileManager defaultManager] removeItemAtPath:record.filePath error:nil];
+    }
+    [self.records removeObject:record];
+    [self.finishedMap removeObjectForKey:record.itemId];
+    [self saveRecords];
+    [[NSNotificationCenter defaultCenter] postNotificationName:RSDownloadsChangedNotification object:nil];
 }
 
 /// 反查某个条目属于哪个源（用于带上该源的解锁令牌）
@@ -306,7 +428,7 @@ static NSString *const kSaveKey = @"repostore.repos.v2";
     for (RSRepo *r in self.mutableRepos) {
         for (RSAppItem *a in r.apps) {
             if ([a.itemId isEqualToString:iid]) return r;
-            // 兜底：同下载地址
+            // 兜底：同 bundleID + 同下载地址
             if (a.downloadURL.length && [a.downloadURL isEqualToString:item.downloadURL]) return r;
         }
     }
@@ -370,6 +492,10 @@ static NSString *const kSaveKey = @"repostore.repos.v2";
                                                                 object:key];
         });
     }];
+
+    // 进度回调
+    [self.session getTasksWithCompletionHandler:^(NSArray *d, NSArray *u, NSArray *dl) {}];
+
     [task resume];
 }
 
@@ -389,6 +515,22 @@ static NSString *const kSaveKey = @"repostore.repos.v2";
 
     [self.progressMap setObject:@(0) forKey:key];
     self.lastError = nil;
+
+    // 先落一条"下载中"记录，让下载页立刻能看到
+    RSDownloadRecord *rec = [self recordForItemId:key];
+    if (!rec) {
+        rec = [RSDownloadRecord new];
+        rec.itemId = key;
+        [self.records addObject:rec];
+    }
+    rec.name      = item.name ?: @"";
+    rec.version   = item.version ?: @"";
+    rec.sizeText  = item.sizeText ?: @"";
+    rec.iconURL   = item.iconURL ?: @"";
+    rec.finished  = NO;
+    rec.finishedAt = nil;
+    [self saveRecords];
+    [[NSNotificationCenter defaultCenter] postNotificationName:RSDownloadsChangedNotification object:nil];
 
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:u];
     [req setValue:@"Mozilla/5.0 (iPhone; CPU iPhone OS 16_1_2 like Mac OS X) AppleWebKit/605.1.15"
@@ -418,7 +560,7 @@ static NSString *const kSaveKey = @"repostore.repos.v2";
             name = [name stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
             NSString *fn = [NSString stringWithFormat:@"%@_%@.ipa", name,
                             item.version.length ? item.version : @"1.0"];
-            NSString *dest = [[self cacheDir] stringByAppendingPathComponent:fn];
+            NSString *dest = [[self downloadsDir] stringByAppendingPathComponent:fn];
             NSURL *destURL = [NSURL fileURLWithPath:dest];
             [[NSFileManager defaultManager] removeItemAtURL:destURL error:nil];
             NSError *mvErr = nil;
@@ -428,13 +570,36 @@ static NSString *const kSaveKey = @"repostore.repos.v2";
                 self.lastError = mvErr.localizedDescription;
                 [[NSNotificationCenter defaultCenter] postNotificationName:@"RSDownloadFailed"
                                                                     object:key];
+                [[NSNotificationCenter defaultCenter] postNotificationName:RSDownloadsChangedNotification
+                                                                    object:nil];
                 if (completion) completion(nil, mvErr.localizedDescription);
                 return;
             }
             [self.progressMap removeObjectForKey:key];
+            [self.taskMap removeObjectForKey:key];
             [self.finishedMap setObject:destURL forKey:key];
+
+            // 写入持久化下载记录
+            RSDownloadRecord *rec = [self recordForItemId:key];
+            if (!rec) {
+                rec = [RSDownloadRecord new];
+                rec.itemId = key;
+                [self.records addObject:rec];
+            }
+            rec.name      = item.name ?: @"";
+            rec.version   = item.version ?: @"";
+            rec.sizeText  = item.sizeText ?: @"";
+            rec.iconURL   = item.iconURL ?: @"";
+            rec.fileName  = fn;
+            rec.filePath  = dest;
+            rec.finished  = YES;
+            rec.finishedAt = [NSDate date];
+            [self saveRecords];
+
             [[NSNotificationCenter defaultCenter] postNotificationName:@"RSDownloadFinished"
                                                                 object:key];
+            [[NSNotificationCenter defaultCenter] postNotificationName:RSDownloadsChangedNotification
+                                                                object:nil];
             if (completion) completion(destURL, nil);
         });
     }];
@@ -445,8 +610,185 @@ static NSString *const kSaveKey = @"repostore.repos.v2";
                   options:NSKeyValueObservingOptionNew context:nil];
         [self.progressObservers setObject:progress forKey:@(task.taskIdentifier)];
     }
+    // 记录 task → itemId，KVO 回调里靠它把进度写回 progressMap
+    [self.taskItemMap setObject:key forKey:@(task.taskIdentifier)];
 
+    [self.taskMap setObject:task forKey:key];
     [task resume];
+}
+
+#pragma mark - 取消下载
+
+/// 取消某个条目的下载，并彻底清除它产生的所有痕迹
+- (void)cancelDownloadForItemId:(NSString *)itemId {
+    if (itemId.length == 0) return;
+
+    NSURLSessionDownloadTask *task = [self.taskMap objectForKey:itemId];
+    if (task) {
+        // 先摘掉观察者，避免 cancel 时 KVO 回调引发问题
+        [self.progressObservers removeObjectForKey:@(task.taskIdentifier)];
+        @try {
+            [task removeObserver:self forKeyPath:@"countOfBytesReceived"];
+        } @catch (NSException *e) { /* 忽略未注册的情况 */ }
+        [task cancel];
+        [self.taskMap removeObjectForKey:itemId];
+    }
+
+    [self.progressMap removeObjectForKey:itemId];
+    [self.finishedMap removeObjectForKey:itemId];
+    [self.resumeDataMap removeObjectForKey:itemId];
+    [self.pausedSet removeObject:itemId];
+
+    // 删除该条目在下载目录里的所有残留文件
+    [self purgeFilesForItemId:itemId];
+    // 删除下载记录
+    for (RSDownloadRecord *r in [self.records copy]) {
+        if ([r.itemId isEqualToString:itemId]) {
+            [self.records removeObject:r];
+        }
+    }
+    [self saveRecords];
+
+    // 清理临时目录里可能残留的下载碎片
+    [self purgeTempFragments];
+
+    [[NSNotificationCenter defaultCenter] postNotificationName:RSDownloadsChangedNotification object:nil];
+}
+
+/// 删除某条目在下载目录内的所有文件（含同名不同后缀、.download 临时文件）
+- (void)purgeFilesForItemId:(NSString *)itemId {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *dir = [self downloadsDir];
+
+    // 1. 按记录里的文件名删
+    for (RSDownloadRecord *r in self.records) {
+        if ([r.itemId isEqualToString:itemId] && r.filePath.length) {
+            [fm removeItemAtPath:r.filePath error:nil];
+        }
+    }
+
+    // 2. 按 itemId 前缀清理（缓存文件名里包含 itemId 的一部分）
+    NSArray<NSString *> *files = [fm contentsOfDirectoryAtPath:dir error:nil];
+    for (NSString *f in files) {
+        if ([f containsString:itemId] ||
+            [f hasSuffix:@".download"] || [f hasSuffix:@".tmp"]) {
+            // 只删能对上 itemId 的，避免误删其它下载
+            if ([f containsString:itemId]) {
+                [fm removeItemAtPath:[dir stringByAppendingPathComponent:f] error:nil];
+            }
+        }
+    }
+}
+
+#pragma mark - 暂停 / 继续
+
+- (BOOL)isPausedItemId:(NSString *)itemId {
+    return itemId.length && [self.pausedSet containsObject:itemId];
+}
+
+- (void)pauseDownloadForItemId:(NSString *)itemId {
+    if (itemId.length == 0) return;
+    NSURLSessionDownloadTask *task = [self.taskMap objectForKey:itemId];
+    if (!task) return;
+
+    [self.pausedSet addObject:itemId];
+    // 保存当前进度百分比，续传后从该点继续显示
+    NSNumber *cur = [self.progressMap objectForKey:itemId];
+    if (cur) [self.resumeDataMap setObject:(NSData *)cur forKey:itemId];
+
+    [self.progressObservers removeObjectForKey:@(task.taskIdentifier)];
+    @try {
+        [task removeObserver:self forKeyPath:@"countOfBytesReceived"];
+    } @catch (NSException *e) {}
+
+    __weak typeof(self) weakSelf = self;
+    [task cancelByProducingResumeData:^(NSData *resumeData) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            if (resumeData) {
+                [self.resumeDataMap setObject:resumeData forKey:itemId];
+            }
+            // 保留进度但标记为暂停：progressMap 里放 -2 表示暂停
+            [self.progressMap setObject:@(-2) forKey:itemId];
+            [self.taskMap removeObjectForKey:itemId];
+            [[NSNotificationCenter defaultCenter] postNotificationName:RSDownloadsChangedNotification
+                                                                object:nil];
+        });
+    }];
+}
+
+- (void)resumeDownloadForItemId:(NSString *)itemId {
+    if (itemId.length == 0) return;
+    NSData *resumeData = [self.resumeDataMap objectForKey:itemId];
+    if (!resumeData) { [self.pausedSet removeObject:itemId]; return; }
+
+    [self.pausedSet removeObject:itemId];
+    [self.progressMap setObject:@(0) forKey:itemId];
+
+    __weak typeof(self) weakSelf = self;
+    NSURLSessionDownloadTask *task =
+    [self.session downloadTaskWithResumeData:resumeData
+                           completionHandler:^(NSURL *location, NSURLResponse *resp, NSError *err) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            [self.progressMap removeObjectForKey:itemId];
+            [self.taskMap removeObjectForKey:itemId];
+            [self.resumeDataMap removeObjectForKey:itemId];
+            if (err || !location) {
+                self.lastError = err.localizedDescription ?: @"续传失败";
+                [[NSNotificationCenter defaultCenter] postNotificationName:@"RSDownloadFailed"
+                                                                    object:itemId];
+                [[NSNotificationCenter defaultCenter] postNotificationName:RSDownloadsChangedNotification
+                                                                    object:nil];
+                return;
+            }
+            RSDownloadRecord *rec = [self recordForItemId:itemId];
+            NSString *fn = rec.fileName.length ? rec.fileName : @"app.ipa";
+            NSString *dest = [[self downloadsDir] stringByAppendingPathComponent:fn];
+            NSURL *destURL = [NSURL fileURLWithPath:dest];
+            [[NSFileManager defaultManager] removeItemAtURL:destURL error:nil];
+            [[NSFileManager defaultManager] moveItemAtURL:location toURL:destURL error:nil];
+
+            [self.finishedMap setObject:destURL forKey:itemId];
+            if (rec) {
+                rec.filePath = dest;
+                rec.finished = YES;
+                rec.finishedAt = [NSDate date];
+            }
+            [self saveRecords];
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"RSDownloadFinished"
+                                                                object:itemId];
+            [[NSNotificationCenter defaultCenter] postNotificationName:RSDownloadsChangedNotification
+                                                                object:nil];
+        });
+    }];
+
+    [task addObserver:self forKeyPath:@"countOfBytesReceived"
+              options:NSKeyValueObservingOptionNew context:nil];
+    [self.taskItemMap setObject:itemId forKey:@(task.taskIdentifier)];
+    [self.taskMap setObject:task forKey:itemId];
+    [task resume];
+}
+
+/// taskIdentifier → itemId
+- (NSString *)itemIdForTaskIdentifier:(NSNumber *)tid {
+    if (!tid) return nil;
+    return [self.taskItemMap objectForKey:tid];
+}
+
+/// 清掉 tmp 目录里 NSURLSession 留下的下载碎片
+- (void)purgeTempFragments {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *tmp = NSTemporaryDirectory();
+    NSArray<NSString *> *items = [fm contentsOfDirectoryAtPath:tmp error:nil];
+    for (NSString *f in items) {
+        if ([f hasPrefix:@"CFNetworkDownload"] || [f hasSuffix:@".download"] ||
+            [f hasSuffix:@".ipdownload"]) {
+            [fm removeItemAtPath:[tmp stringByAppendingPathComponent:f] error:nil];
+        }
+    }
 }
 
 - (void)observeValueForKeyPath:(NSString *)keyPath
@@ -463,6 +805,18 @@ static NSString *const kSaveKey = @"repostore.repos.v2";
         double p = got / total;
         if (p < 0) p = 0;
         if (p > 1) p = 1;
+
+        // 关键：必须把进度写回 progressMap，
+        // 否则下载管理器 currentProgressForItemId 永远读到初始值 0
+        // （详情页靠 cb(p) 回调能显示，但管理器读不到 → 进度条一动不动）
+        NSString *itemId = [[self itemIdForTaskIdentifier:@(t.taskIdentifier)] copy];
+        if (itemId) {
+            // KVO 在后台线程回调，字典是共享的，必须加锁防止并发写崩溃
+            @synchronized (self.progressMap) {
+                [self.progressMap setObject:@(p) forKey:itemId];
+            }
+        }
+
         dispatch_async(dispatch_get_main_queue(), ^{ cb(p); });
     }
     if (t.state == NSURLSessionTaskStateCompleted) {
@@ -476,7 +830,7 @@ static NSString *const kSaveKey = @"repostore.repos.v2";
     return n ? n.doubleValue : -1;
 }
 
-- (NSURL *)finishedFileForItem:(RSAppItem *)item {
+- (NSURL *)finishedURLForItem:(RSAppItem *)item {
     return [self.finishedMap objectForKey:item.itemId];
 }
 
