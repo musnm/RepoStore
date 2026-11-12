@@ -18,16 +18,25 @@
     self.title = self.repo.name.length ? self.repo.name : @"源";
     self.view.backgroundColor = [RSTheme bg];
 
-    self.table = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStylePlain];
-    self.table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.table = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
+    self.table.translatesAutoresizingMaskIntoConstraints = NO;
     self.table.backgroundColor = [RSTheme bg];
     self.table.separatorStyle = UITableViewCellSeparatorStyleNone;
     self.table.dataSource = self;
     self.table.delegate = self;
     self.table.contentInset = UIEdgeInsetsMake(6, 0, 24, 0);
-    self.table.rowHeight = 80;
+    // 让 cell 自适应高度（内容链两端已钉死），避免固定行高裁切 / 内容溢出遮挡
+    self.table.rowHeight = UITableViewAutomaticDimension;
+    self.table.estimatedRowHeight = 88;
     [self.table registerClass:[RSAppCell class] forCellReuseIdentifier:@"app"];
     [self.view addSubview:self.table];
+    // 钉在安全区，避免被导航栏 / 搜索栏压住
+    [NSLayoutConstraint activateConstraints:@[
+        [self.table.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+        [self.table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.table.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+    ]];
 
     self.search = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.search.searchResultsUpdater = self;
@@ -43,6 +52,21 @@
     if (self.repo.requiresUnlock && !self.repo.isUnlocked) {
         [self showLockedOverlay];
     }
+
+    // 添加源后刷新是异步的，刷新完成会发 RSReposChanged。
+    // 这里必须监听并重载，否则进源时看到的是空列表，要手动刷新一次才出内容。
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(onReposChanged)
+                                                 name:@"RSReposChanged"
+                                               object:nil];
+}
+
+- (void)onReposChanged {
+    [self applyFilter:(self.search.searchBar.text ?: @"")];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (void)showLockedOverlay {
