@@ -3,5 +3,8 @@ build/
 DerivedData/
 *.xcuserstate
 xcuserdata/
-*.ipa
 Payload/
+
+# IPA 产物不入库，请走 GitHub Release 或本地构建
+*.ipa
+!releases/*.ipa
