@@ -2,6 +2,12 @@
 //  RSDeobfuscator.m
 //  RepoStore
 //
+//  注意：本文件依赖 RSEsignKey.h（第 2 方库的 ESign 解密密钥表，未随本仓库分发）。
+//  在本地构建前，请自备该头文件，提供：
+//      extern const unsigned char rs_esign_key[];
+//      #define RS_ESIGN_KEY_LEN <key 长度>
+//  来源参考：Nyasami/Ksign — AltSourceKit/Utilities/Key/EsignSourceKey.swift
+//
 
 #import "RSDeobfuscator.h"
 #import "RSEsignKey.h"
