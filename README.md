@@ -66,7 +66,7 @@ sh build.sh              # 注意用 sh，脚本未置可执行位时直接 ./bu
 
 ### 关于 ESign 密钥（RSEsignKey.h）
 
-`objc/RS/Models/RSEsignKey.h` 是 ESign 源的解密密钥表（5055 字节），**不随仓库分发**（`*.gitignore` 已忽略），由 `tools/gen_esign_key.py` 从公开上游确定性重建：
+`objc/RS/Models/RSEsignKey.h` 是 ESign 源的解密密钥表（5055 字节），**不随仓库分发**（`.gitignore` 已忽略），由 `tools/gen_esign_key.py` 从公开上游确定性重建：
 
 ```sh
 # 手动生成（build.sh 在文件缺失时会自动执行这一步）
