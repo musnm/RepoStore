@@ -1,9 +1,9 @@
 name: Build IPA
 
 # 说明：
-# - GitHub 免费账户无法使用 macOS runner，因此本工作流默认只做 Linux 侧静态检查。
-# - 若你的账户有 macOS 额度（团队/付费计划），把下面 build-ipa 任务的 if 条件改为 true 即可。
-# - 没有 macOS 时，请参考 README 里的「其它出包方式」。
+# - 本项目主实现为 Objective-C（objc/ 目录），由 objc/build.sh 用 Theos 工具链交叉编译。
+# - GitHub 免费账户无法使用 macOS runner，因此默认只做 Linux 侧结构检查。
+# - 若账户有 macOS 额度，可把 build-ipa 的 if 改为 true。
 
 on:
   push:
@@ -11,80 +11,64 @@ on:
   workflow_dispatch:
 
 jobs:
-  # 1) 轻量静态检查：所有平台都能跑，用来尽早发现语法/结构问题
+  # 1) 静态检查：Objective-C 源码结构
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check Swift file structure
+      - name: 源文件清单
+        run: |
+          echo "== Objective-C 源文件 =="
+          find objc/RS -name "*.m" -o -name "*.h" | sort
+
+      - name: 括号配平检查
         run: |
           set -e
-          echo "== Swift 文件清单 =="
-          find RepoStore -name "*.swift" | sort
-          echo
-          echo "== 括号配平检查 =="
           fail=0
-          for f in $(find RepoStore -name "*.swift"); do
+          for f in $(find objc/RS -name "*.m" -o -name "*.h"); do
             o=$(tr -cd '{' < "$f" | wc -c)
             c=$(tr -cd '}' < "$f" | wc -c)
             if [ "$o" != "$c" ]; then
               echo "MISMATCH $f: {=$o }=$c"; fail=1
             fi
+            o2=$(tr -cd '(' < "$f" | wc -c)
+            c2=$(tr -cd ')' < "$f" | wc -c)
+            if [ "$o2" != "$c2" ]; then
+              echo "PAREN MISMATCH $f: (=$o2 )=$c2"; fail=1
+            fi
           done
-          [ $fail -eq 0 ] && echo "全部配平 OK"
+          [ $fail -eq 0 ] && echo "全部配平 OK" || exit 1
 
-      - name: Validate JSON example
+      - name: 关键文件存在性
+        run: |
+          set -e
+          for f in \
+            objc/build.sh \
+            objc/ent_ts.plist \
+            objc/RS/RSAppDelegate.m \
+            objc/RS/Services/RSStore.m \
+            objc/RS/Views/RSRepoListViewController.m \
+            objc/RS/Views/RSPopMenuView.m
+          do
+            test -f "$f" || { echo "缺少 $f"; exit 1; }
+          done
+          echo "关键文件齐全"
+
+      - name: 校验示例源 JSON
         run: |
           if [ -f example-repo.json ]; then
             python3 -m json.tool example-repo.json > /dev/null && echo "example-repo.json OK"
           fi
 
-      - name: Validate project.yml
-        run: |
-          python3 -c "import yaml,sys; yaml.safe_load(open('project.yml'))" && echo "project.yml OK" || \
-          echo "PyYAML 未安装，跳过（可忽略）"
-
-  # 2) 真正的 IPA 构建（需要 macOS runner）
+  # 2) 真机构建（需 macOS runner + 自备 RSEsignKey.h）
   build-ipa:
     needs: lint
-    if: false   # 免费账户无 macOS 额度；有额度时改为 true，或改成 vars.ENABLE_MACOS_BUILD == 'true'
+    if: false
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install tools
-        run: brew install xcodegen ldid
-
-      - name: Generate project
-        run: xcodegen generate
-
       - name: Build
         run: |
-          set -o pipefail
-          xcodebuild \
-            -project RepoStore.xcodeproj \
-            -scheme RepoStore \
-            -configuration Release \
-            -sdk iphoneos \
-            -derivedDataPath build \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            ARCHS=arm64 \
-            ONLY_ACTIVE_ARCH=NO \
-            build
-
-      - name: Package IPA
-        run: |
-          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
-          rm -rf Payload && mkdir -p Payload
-          cp -R "$APP" Payload/
-          ldid -S "Payload/$(basename "$APP")/$(basename "$APP" .app)" || true
-          zip -r -q RepoStore.ipa Payload
-          ls -lh RepoStore.ipa
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: RepoStore-ipa
-          path: RepoStore.ipa
+          echo "需自备 objc/RS/Models/RSEsignKey.h 后启用"
+          chmod +x objc/build.sh
