@@ -21,8 +21,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, readonly) NSString *itemId;
 @property (nonatomic, readonly) NSString *sizeText;
-/// 下载地址是否是可直链的 IPA（.ipa 结尾）
+/// 下载地址是否是可直链的 IPa（.ipa 结尾）
 @property (nonatomic, readonly) BOOL isDirectIPA;
+/// 是否是可下载的应用（有下载地址 + 有体积，否则视为公告/通知/占位条目）
+@property (nonatomic, readonly) BOOL isDownloadable;
 /// 分类（从 localizedDescription 里 "分类：xxx" 提取）
 @property (nonatomic, readonly) NSString *categoryName;
 
