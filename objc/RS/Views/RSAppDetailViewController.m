@@ -12,6 +12,29 @@
 @property (nonatomic, strong) UIButton *trollBtn;
 @property (nonatomic, strong) UIButton *retryBtn;
 @property (nonatomic, strong) NSURL *downloadedURL;
+@property (nonatomic, strong) NSTimer *progressTimer;
+@property (nonatomic, strong) UIButton *cancelBtn;
+@property (nonatomic, strong) UIButton *pauseBtn;
+
+// 操作卡片底边跟随：同一时刻只让一条生效，避免多条同锚点约束互相打架导致错位
+@property (nonatomic, strong) NSLayoutConstraint *bottomFollowAction;
+@property (nonatomic, strong) NSLayoutConstraint *bottomFollowPause;
+@property (nonatomic, strong) NSLayoutConstraint *bottomFollowBar;
+@property (nonatomic, strong) NSLayoutConstraint *bottomFollowTroll;
+
+// 可折叠约束（隐藏时归零，让操作卡片真正收起）
+@property (nonatomic, strong) NSLayoutConstraint *progressGap;
+@property (nonatomic, strong) NSLayoutConstraint *progressHeight;
+@property (nonatomic, strong) NSLayoutConstraint *barGap;
+@property (nonatomic, strong) NSLayoutConstraint *barHeight;
+@property (nonatomic, strong) NSLayoutConstraint *pauseGap;
+@property (nonatomic, strong) NSLayoutConstraint *pauseHeight;
+@property (nonatomic, strong) NSLayoutConstraint *trollGap;
+@property (nonatomic, strong) NSLayoutConstraint *trollHeight;
+
+/// 根据当前控件显隐，切换操作卡片底边约束。
+/// 必须每次改完 hidden 都调用，否则卡片高度会和实际内容脱节 → 按钮互相遮挡 / 被简介压住。
+- (void)syncActionCardHeight;
 @end
 
 @implementation RSAppDetailViewController
@@ -33,6 +56,171 @@
     ]];
 
     [self buildUI];
+    [self restoreDownloadState];
+}
+
+/// 进入页面时恢复下载现场：已下载 → 显示分享按钮；下载中 → 显示进度并继续跟踪
+- (void)restoreDownloadState {
+    NSString *itemId = self.item.itemId;
+    if (!itemId.length) return;
+
+    // 公告 / 通知 / 无资源条目：不给下载
+    if (!self.item.isDownloadable) {
+        [self applyNonDownloadableUI];
+        return;
+    }
+
+    // 已下载完成
+    NSURL *done = [[RSStore shared] finishedURLForItem:self.item];
+    if (!done) {
+        for (RSDownloadRecord *r in [[RSStore shared] downloadRecords]) {
+            if ([r.itemId isEqualToString:itemId] && r.finished && r.filePath.length) {
+                done = [NSURL fileURLWithPath:r.filePath];
+                break;
+            }
+        }
+    }
+    if (done) {
+        self.downloadedURL = done;
+        [self applyFinishedUI];
+        return;
+    }
+
+    // 暂停功能已移除，忽略历史遗留的暂停状态，直接按进度恢复
+    if ([[RSStore shared] isPausedItemId:itemId]) {
+        [[RSStore shared] resumeDownloadForItemId:itemId];
+    }
+
+    // 正在下载
+    double p = [[RSStore shared] currentProgressForItemId:itemId];
+    if (p >= 0) {
+        [self applyDownloadingUI];
+        self.progressBar.progress = (float)p;
+        self.progressLabel.text = [NSString stringWithFormat:@"%.0f%%", p * 100];
+        [self startProgressTracking];
+        return;
+    }
+
+    // 无下载任务（取消后 / 全新条目）：明确回到可下载初始态。
+    // 原来这里什么都不做，界面停留在未初始化状态，才出现"此条目不可下载"的假象。
+    [self applyIdleUI];
+}
+
+/// 可下载 · 初始态
+- (void)applyIdleUI {
+    self.actionBtn.enabled = YES;
+    [self.actionBtn setTitle:@"  下载 IPA" forState:UIControlStateNormal];
+    [self.actionBtn setImage:[UIImage systemImageNamed:@"arrow.down.circle.fill"]
+                    forState:UIControlStateNormal];
+    self.actionBtn.backgroundColor = [RSTheme accent];
+    self.progressBar.hidden = YES;
+    self.progressBar.progress = 0;
+    self.progressLabel.hidden = YES;
+    self.progressLabel.text = @"";
+    self.trollBtn.hidden = YES;
+    self.retryBtn.hidden = YES;
+    self.cancelBtn.hidden = YES;
+    self.pauseBtn.hidden = YES;
+    [self syncActionCardHeight];
+}
+
+/// 已下载状态的外观
+- (void)applyFinishedUI {
+    self.actionBtn.enabled = YES;
+    [self.actionBtn setTitle:@"  保存 / 分享 / 打开方式" forState:UIControlStateNormal];
+    [self.actionBtn setImage:[UIImage systemImageNamed:@"square.and.arrow.up.fill"]
+                    forState:UIControlStateNormal];
+    self.actionBtn.backgroundColor = [RSTheme accent];
+    self.progressBar.hidden = YES;
+    self.progressLabel.hidden = NO;
+    self.progressLabel.textColor = [RSTheme accent];
+    self.progressLabel.text = @"✓ 下载完成";
+    self.trollBtn.hidden = YES;
+    self.retryBtn.hidden = YES;
+    self.cancelBtn.hidden = YES;
+    self.pauseBtn.hidden = YES;
+    [self syncActionCardHeight];
+}
+
+/// 下载中状态的外观
+- (void)applyDownloadingUI {
+    self.actionBtn.enabled = NO;
+    [self.actionBtn setTitle:@"  下载中…" forState:UIControlStateNormal];
+    [self.actionBtn setImage:nil forState:UIControlStateNormal];
+    self.actionBtn.backgroundColor = [RSTheme card2];
+    self.progressBar.hidden = NO;
+    self.progressLabel.hidden = NO;
+    self.progressLabel.textColor = [RSTheme accent];
+    self.trollBtn.hidden = YES;
+    self.retryBtn.hidden = YES;
+    // 暂停 / 取消下载已移除：续传从零开始无意义，统一到下载管理器处理
+    self.cancelBtn.hidden = YES;
+    self.pauseBtn.hidden = YES;
+    [self syncActionCardHeight];
+}
+
+/// 公告 / 通知 / 无下载资源的条目外观
+- (void)applyNonDownloadableUI {
+    self.actionBtn.enabled = NO;
+    [self.actionBtn setTitle:@"  此条目不可下载" forState:UIControlStateNormal];
+    [self.actionBtn setImage:nil forState:UIControlStateNormal];
+    self.actionBtn.backgroundColor = [RSTheme card2];
+    self.progressBar.hidden = YES;
+    self.progressLabel.hidden = NO;
+    self.progressLabel.textColor = [RSTheme textSub];
+    self.progressLabel.text = @"公告 / 通知";
+    self.trollBtn.hidden = YES;
+    self.retryBtn.hidden = YES;
+    self.cancelBtn.hidden = YES;
+    self.pauseBtn.hidden = YES;
+    [self syncActionCardHeight];
+}
+
+/// 轮询进度（页面可能在下载开始后才进入）
+- (void)startProgressTracking {
+    [self.progressTimer invalidate];
+    __weak typeof(self) weakSelf = self;
+    self.progressTimer = [NSTimer scheduledTimerWithTimeInterval:0.3 repeats:YES block:^(NSTimer *t) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) { [t invalidate]; return; }
+        NSString *itemId = self.item.itemId;
+
+        // 暂停功能已移除：不再在此切暂停外观
+
+        double p = [[RSStore shared] currentProgressForItemId:itemId];
+        if (p >= 0) {
+            self.progressBar.progress = (float)p;
+            self.progressLabel.text = [NSString stringWithFormat:@"%.0f%%", p * 100];
+            return;
+        }
+        // 下载已结束（成功或失败）
+        [t invalidate];
+        self.progressTimer = nil;
+        NSURL *done = [[RSStore shared] finishedURLForItem:self.item];
+        if (!done) {
+            for (RSDownloadRecord *r in [[RSStore shared] downloadRecords]) {
+                if ([r.itemId isEqualToString:itemId] && r.finished && r.filePath.length) {
+                    done = [NSURL fileURLWithPath:r.filePath];
+                    break;
+                }
+            }
+        }
+        if (done) {
+            self.downloadedURL = done;
+            [self applyFinishedUI];
+        } else {
+            [self.actionBtn setTitle:@"  重试下载" forState:UIControlStateNormal];
+            self.actionBtn.enabled = YES;
+            self.actionBtn.backgroundColor = [RSTheme accent];
+            self.progressLabel.text = @"下载失败";
+            self.progressLabel.textColor = [UIColor colorWithRed:1 green:0.3 blue:0.3 alpha:1];
+            self.progressBar.hidden = YES;
+        }
+    }];
+}
+
+- (void)dealloc {
+    [_progressTimer invalidate];
 }
 
 - (UIView *)cardContainer {
@@ -83,7 +271,7 @@
     self.actionBtn.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
     self.actionBtn.backgroundColor = [RSTheme accent];
     self.actionBtn.layer.cornerRadius = 15;
-    [self.actionBtn addTarget:self action:@selector(downloadTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.actionBtn addTarget:self action:@selector(actionTapped) forControlEvents:UIControlEventTouchUpInside];
 
     self.progressBar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
     self.progressBar.translatesAutoresizingMaskIntoConstraints = NO;
@@ -125,8 +313,33 @@
     self.retryBtn.hidden = YES;
     [self.retryBtn addTarget:self action:@selector(downloadTapped) forControlEvents:UIControlEventTouchUpInside];
 
+    // 取消下载
+    self.cancelBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.cancelBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.cancelBtn setTitle:@"  取消下载" forState:UIControlStateNormal];
+    [self.cancelBtn setImage:[UIImage systemImageNamed:@"xmark.circle"] forState:UIControlStateNormal];
+    [self.cancelBtn setTitleColor:[UIColor colorWithRed:1 green:0.35 blue:0.35 alpha:1]
+                         forState:UIControlStateNormal];
+    self.cancelBtn.tintColor = [UIColor colorWithRed:1 green:0.35 blue:0.35 alpha:1];
+    self.cancelBtn.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    self.cancelBtn.backgroundColor = [RSTheme card2];
+    self.cancelBtn.layer.cornerRadius = 13;
+    self.cancelBtn.hidden = YES;
+
+    // 暂停 / 继续
+    self.pauseBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.pauseBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.pauseBtn setTitle:@"  暂停" forState:UIControlStateNormal];
+    [self.pauseBtn setImage:[UIImage systemImageNamed:@"pause.circle"] forState:UIControlStateNormal];
+    [self.pauseBtn setTitleColor:[RSTheme accent] forState:UIControlStateNormal];
+    self.pauseBtn.tintColor = [RSTheme accent];
+    self.pauseBtn.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    self.pauseBtn.backgroundColor = [RSTheme card2];
+    self.pauseBtn.layer.cornerRadius = 13;
+    self.pauseBtn.hidden = YES;
+
     for (UIView *v in @[self.actionBtn, self.progressBar, self.progressLabel,
-                        self.trollBtn, self.retryBtn]) {
+                        self.trollBtn, self.retryBtn, self.cancelBtn, self.pauseBtn]) {
         [actionCard addSubview:v];
     }
 
@@ -180,6 +393,12 @@
         k.text = rows[i][0];
         k.font = [UIFont systemFontOfSize:13];
         k.textColor = [RSTheme textSub];
+        k.numberOfLines = 1;
+        // 左侧 key 必须优先完整显示，否则会被右侧长值挤成 0 宽 → 文本溢出卡片
+        [k setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                           forAxis:UILayoutConstraintAxisHorizontal];
+        [k setContentHuggingPriority:UILayoutPriorityRequired
+                              forAxis:UILayoutConstraintAxisHorizontal];
 
         UILabel *v = [UILabel new];
         v.translatesAutoresizingMaskIntoConstraints = NO;
@@ -187,7 +406,10 @@
         v.font = [UIFont systemFontOfSize:12];
         v.textColor = [[UIColor whiteColor] colorWithAlphaComponent:0.85];
         v.textAlignment = NSTextAlignmentRight;
+        v.numberOfLines = 1;
         v.lineBreakMode = NSLineBreakByTruncatingMiddle;
+        [v setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
+                                           forAxis:UILayoutConstraintAxisHorizontal];
 
         [row addSubview:k];
         [row addSubview:v];
@@ -195,10 +417,16 @@
 
         [constraints addObjectsFromArray:@[
             [k.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
-            [k.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+            [k.topAnchor constraintEqualToAnchor:row.topAnchor],
+            [k.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
             [v.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],
-            [v.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+            [v.topAnchor constraintEqualToAnchor:row.topAnchor],
+            [v.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
             [v.leadingAnchor constraintGreaterThanOrEqualToAnchor:k.trailingAnchor constant:12],
+            [row.heightAnchor constraintGreaterThanOrEqualToConstant:22],
+            // 关键：row 必须横向钉在 infoCard 内，否则宽度为 0 → 标签画到卡片外面
+            [row.leadingAnchor constraintEqualToAnchor:infoCard.leadingAnchor constant:14],
+            [row.trailingAnchor constraintEqualToAnchor:infoCard.trailingAnchor constant:-14],
         ]];
 
         if (prev == nil) {
@@ -226,11 +454,14 @@
     [all addObject:infoCard];
     for (UIView *v in all) [content addSubview:v];
 
+    UILayoutGuide *g = self.scroll.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
         [content.topAnchor constraintEqualToAnchor:self.scroll.topAnchor],
         [content.leadingAnchor constraintEqualToAnchor:self.scroll.leadingAnchor],
         [content.trailingAnchor constraintEqualToAnchor:self.scroll.trailingAnchor],
-        [content.bottomAnchor constraintEqualToAnchor:self.scroll.bottomAnchor],
+        // 注意：不在这里钉 content.bottom = scroll.bottom，
+        // 否则和下方 "content.bottom = infoCard.bottom + 30" 冲突，导致内容被压缩。
+        // content 高度完全由内部内容链决定（608 行那条）。
         [content.widthAnchor constraintEqualToAnchor:self.scroll.widthAnchor],
 
         [icon.topAnchor constraintEqualToAnchor:content.topAnchor constant:14],
@@ -250,31 +481,77 @@
         [actionCard.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:16],
         [actionCard.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-16],
 
+        // ── 操作卡片内部：一条从上到下的唯一垂直流，每个控件都有明确的上一环
+        // 1) 主按钮
         [self.actionBtn.topAnchor constraintEqualToAnchor:actionCard.topAnchor constant:14],
         [self.actionBtn.leadingAnchor constraintEqualToAnchor:actionCard.leadingAnchor constant:14],
         [self.actionBtn.trailingAnchor constraintEqualToAnchor:actionCard.trailingAnchor constant:-14],
         [self.actionBtn.heightAnchor constraintEqualToConstant:50],
 
-        [self.progressLabel.topAnchor constraintEqualToAnchor:actionCard.topAnchor constant:24],
-        [self.progressLabel.centerXAnchor constraintEqualToAnchor:actionCard.centerXAnchor],
+        // 2) 进度文字（仅下载中显示）
+        [self.progressLabel.leadingAnchor constraintEqualToAnchor:actionCard.leadingAnchor constant:18],
+        [self.progressLabel.trailingAnchor constraintEqualToAnchor:actionCard.trailingAnchor constant:-18],
 
-        [self.progressBar.topAnchor constraintEqualToAnchor:self.progressLabel.bottomAnchor constant:8],
+        // 3) 进度条
         [self.progressBar.leadingAnchor constraintEqualToAnchor:actionCard.leadingAnchor constant:18],
         [self.progressBar.trailingAnchor constraintEqualToAnchor:actionCard.trailingAnchor constant:-18],
-        [self.progressBar.heightAnchor constraintEqualToConstant:6],
 
-        [self.trollBtn.topAnchor constraintEqualToAnchor:self.actionBtn.bottomAnchor constant:10],
+        // 4) 暂停 / 取消：并排
+        [self.pauseBtn.leadingAnchor constraintEqualToAnchor:actionCard.leadingAnchor constant:14],
+
+        [self.cancelBtn.topAnchor constraintEqualToAnchor:self.pauseBtn.topAnchor],
+        [self.cancelBtn.leadingAnchor constraintEqualToAnchor:self.pauseBtn.trailingAnchor constant:10],
+        [self.cancelBtn.trailingAnchor constraintEqualToAnchor:actionCard.trailingAnchor constant:-14],
+        [self.cancelBtn.widthAnchor constraintEqualToAnchor:self.pauseBtn.widthAnchor],
+        [self.cancelBtn.heightAnchor constraintEqualToConstant:42],
+
+        // 5) TrollStore / 重新下载：并排
         [self.trollBtn.leadingAnchor constraintEqualToAnchor:actionCard.leadingAnchor constant:14],
-        [self.trollBtn.heightAnchor constraintEqualToConstant:42],
 
-        [self.retryBtn.topAnchor constraintEqualToAnchor:self.actionBtn.bottomAnchor constant:10],
+        [self.retryBtn.topAnchor constraintEqualToAnchor:self.trollBtn.topAnchor],
         [self.retryBtn.leadingAnchor constraintEqualToAnchor:self.trollBtn.trailingAnchor constant:10],
         [self.retryBtn.trailingAnchor constraintEqualToAnchor:actionCard.trailingAnchor constant:-14],
         [self.retryBtn.widthAnchor constraintEqualToAnchor:self.trollBtn.widthAnchor],
         [self.retryBtn.heightAnchor constraintEqualToConstant:42],
-
-        [actionCard.bottomAnchor constraintEqualToAnchor:self.actionBtn.bottomAnchor constant:14],
     ]];
+
+    // ── 三级"可折叠"约束：隐藏时高度/间距归零，让卡片真正收起来。
+    //    之前隐藏视图仍占位，且卡片底边只挂主按钮 → 隐藏控件溢出卡片、互相遮挡。
+    self.progressGap   = [self.progressLabel.topAnchor
+                          constraintEqualToAnchor:self.actionBtn.bottomAnchor constant:10];
+    self.progressHeight= [self.progressLabel.heightAnchor constraintEqualToConstant:16];
+    self.barGap        = [self.progressBar.topAnchor
+                          constraintEqualToAnchor:self.progressLabel.bottomAnchor constant:8];
+    self.barHeight     = [self.progressBar.heightAnchor constraintEqualToConstant:6];
+    self.pauseGap      = [self.pauseBtn.topAnchor
+                          constraintEqualToAnchor:self.progressBar.bottomAnchor constant:12];
+    self.pauseHeight   = [self.pauseBtn.heightAnchor constraintEqualToConstant:42];
+    self.trollGap      = [self.trollBtn.topAnchor
+                          constraintEqualToAnchor:self.pauseBtn.bottomAnchor constant:10];
+    self.trollHeight   = [self.trollBtn.heightAnchor constraintEqualToConstant:42];
+    [NSLayoutConstraint activateConstraints:@[
+        self.progressGap, self.progressHeight,
+        self.barGap, self.barHeight,
+        self.pauseGap, self.pauseHeight,
+        self.trollGap, self.trollHeight,
+    ]];
+
+    // ── 卡片底边：按"最后一行可见控件"决定，用运行时动态切换整组约束，
+    // 而不是同时挂多条同锚点约束互相打架（那是之前错位的根因）。
+    self.bottomFollowAction = [actionCard.bottomAnchor
+        constraintEqualToAnchor:self.actionBtn.bottomAnchor constant:14];
+    self.bottomFollowPause = [actionCard.bottomAnchor
+        constraintEqualToAnchor:self.pauseBtn.bottomAnchor constant:14];
+    self.bottomFollowBar = [actionCard.bottomAnchor
+        constraintEqualToAnchor:self.progressBar.bottomAnchor constant:14];
+    self.bottomFollowTroll = [actionCard.bottomAnchor
+        constraintEqualToAnchor:self.trollBtn.bottomAnchor constant:14];
+    // 默认：只有主按钮
+    self.bottomFollowAction.active = YES;
+    self.bottomFollowPause.active = NO;
+    self.bottomFollowBar.active = NO;
+    self.bottomFollowTroll.active = NO;
+
     [NSLayoutConstraint activateConstraints:constraints];
 
     UIView *lastBefore = actionCard;
@@ -290,69 +567,98 @@
         [infoCard.topAnchor constraintEqualToAnchor:lastBefore.bottomAnchor constant:12],
         [infoCard.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:16],
         [infoCard.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-16],
-        [content.bottomAnchor constraintGreaterThanOrEqualToAnchor:infoCard.bottomAnchor constant:30],
+        [content.bottomAnchor constraintEqualToAnchor:infoCard.bottomAnchor constant:30],
     ]];
 }
 
 #pragma mark - 下载
 
-- (void)downloadTapped {
-    self.actionBtn.enabled = NO;
-    [self.actionBtn setTitle:@"  下载中…" forState:UIControlStateNormal];
-    self.actionBtn.backgroundColor = [RSTheme card2];
-    self.progressBar.hidden = NO;
-    self.progressLabel.hidden = NO;
-    self.progressBar.progress = 0;
-    self.progressLabel.text = @"0%";
-    self.trollBtn.hidden = YES;
-    self.retryBtn.hidden = YES;
+/// 主按钮：未下载→下载；已下载→分享；下载中→暂停
+- (void)actionTapped {
+    if (self.item.isDownloadable == NO) return;
 
+    NSURL *done = [[RSStore shared] finishedURLForItem:self.item];
+    if (done) {
+        [RSInstallService shareFile:done from:self];
+        return;
+    }
+    if ([[RSStore shared] isDownloadingItemId:self.item.itemId]) {
+        return;
+    }
+    [self downloadTapped];
+}
+
+/// 发起下载
+- (void)downloadTapped {
+    if (self.item.isDownloadable == NO) return;
+
+    [self applyDownloadingUI];
     __weak typeof(self) weakSelf = self;
     [[RSStore shared] downloadItem:self.item
                           progress:^(double p) {
+        __strong typeof(weakSelf) s = weakSelf;
+        if (!s) return;
         dispatch_async(dispatch_get_main_queue(), ^{
-            __strong typeof(weakSelf) self = weakSelf;
-            if (!self) return;
-            self.progressBar.progress = (float)p;
-            self.progressLabel.text = [NSString stringWithFormat:@"%.0f%%", p * 100];
+            s.progressBar.progress = (float)p;
+            s.progressLabel.text = [NSString stringWithFormat:@"%.0f%%", p * 100];
         });
-    } completion:^(NSURL *url, NSString *error) {
+    }
+                        completion:^(NSURL *fileURL, NSString *error) {
+        __strong typeof(weakSelf) s = weakSelf;
+        if (!s) return;
         dispatch_async(dispatch_get_main_queue(), ^{
-            __strong typeof(weakSelf) self = weakSelf;
-            if (!self) return;
-            self.actionBtn.enabled = YES;
-
-            if (url) {
-                self.downloadedURL = url;
-                [self.actionBtn setTitle:@"  保存 / 分享 / 打开方式" forState:UIControlStateNormal];
-                [self.actionBtn setImage:[UIImage systemImageNamed:@"square.and.arrow.up.fill"]
-                                forState:UIControlStateNormal];
-                self.actionBtn.backgroundColor = [RSTheme accent];
-                self.progressBar.hidden = YES;
-                self.progressLabel.text = @"✓ 下载完成";
-                self.trollBtn.hidden = NO;
-                self.retryBtn.hidden = NO;
-
-                UINotificationFeedbackGenerator *fb = [UINotificationFeedbackGenerator new];
-                [fb notificationOccurred:UINotificationFeedbackTypeSuccess];
-
-                [RSInstallService shareFile:url from:self];
+            if (fileURL) {
+                s.downloadedURL = fileURL;
+                [s applyFinishedUI];
             } else {
-                [self.actionBtn setTitle:@"  重试下载" forState:UIControlStateNormal];
-                self.actionBtn.backgroundColor = [RSTheme accent];
-                self.progressLabel.text = @"下载失败";
-                self.progressLabel.textColor = [UIColor colorWithRed:1 green:0.3 blue:0.3 alpha:1];
-                [RSInstallService toast:(error.length ? error : @"下载失败") in:self];
+                [RSInstallService toast:(error.length ? error : @"下载失败") in:s];
+                [s applyNonDownloadableUI];
             }
         });
     }];
 }
 
-- (void)trollTapped {
-    if (!self.downloadedURL) return;
-    if (![RSInstallService trollStoreInstall:self.downloadedURL]) {
-        [RSInstallService shareFile:self.downloadedURL from:self];
+/// 安全兜底（按钮已隐藏，不会触发；保留避免 unrecognized selector）
+- (void)trollTapped {}
+
+- (void)syncActionCardHeight {
+    BOOL barOn   = !self.progressBar.hidden;
+    BOOL pauseOn = !self.pauseBtn.hidden;
+    BOOL trollOn = NO;   // Troll/重试行已移除
+
+    // 1) 进度文字 / 进度条：不可见就整段折掉，不留空高
+    self.progressGap.constant    = barOn ? 10 : 0;
+    self.progressHeight.constant = barOn ? 16 : 0;
+    self.barGap.constant         = barOn ? 8  : 0;
+    self.barHeight.constant      = barOn ? 6  : 0;
+
+    // 2) 暂停/取消行
+    self.pauseGap.constant    = pauseOn ? 12 : 0;
+    self.pauseHeight.constant = pauseOn ? 42 : 0;
+
+    // 3) Troll/重试行：已移除，永久折叠
+    self.trollGap.constant    = 0;
+    self.trollHeight.constant = 0;
+
+    // 4) 卡片底边跟随最后一个可见行（只激活一条，避免多约束打架）
+    self.bottomFollowAction.active = NO;
+    self.bottomFollowPause.active  = NO;
+    self.bottomFollowBar.active    = NO;
+    self.bottomFollowTroll.active  = NO;
+
+    if (trollOn) {
+        self.bottomFollowTroll.active = YES;
+    } else if (pauseOn) {
+        self.bottomFollowPause.active = YES;
+    } else if (barOn) {
+        self.bottomFollowBar.active = YES;
+    } else {
+        self.bottomFollowAction.active = YES;
     }
+
+    [UIView animateWithDuration:0.22 animations:^{
+        [self.view layoutIfNeeded];
+    }];
 }
 
 @end
