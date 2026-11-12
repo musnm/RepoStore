@@ -22,8 +22,8 @@ static NSString *RSStr2(id v) {
     return nil;
 }
 
-- (void)applyJSON:(NSDictionary *)json {
-    if (![json isKindOfClass:[NSDictionary class]]) return;
+- (NSInteger)applyJSON:(NSDictionary *)json {
+    if (![json isKindOfClass:[NSDictionary class]]) return 0;
 
     NSString *n = RSStr2(json[@"name"]);
     if (n.length) self.name = n;
@@ -35,18 +35,30 @@ static NSString *RSStr2(id v) {
     NSString *ident = RSStr2(json[@"identifier"]);
     if (ident.length) self.identifier = ident;
 
-    NSString *sub = RSStr2(json[@"subtitle"]) ?: RSStr2(json[@"description"]);
+    NSString *sub = RSStr2(json[@"subtitle"])
+                 ?: RSStr2(json[@"description"])
+                 ?: RSStr2(json[@"desc"]);
     if (sub.length) self.subtitle = sub;
 
     NSString *ico = RSStr2(json[@"iconURL"]) ?: RSStr2(json[@"icon"]);
     if (ico.length) self.iconURL = ico;
 
+    // 真实字段 sourceURL
+    NSString *src = RSStr2(json[@"sourceURL"]);
+    if (src.length) self.sourceURL = src;
+
+    NSString *tc = RSStr2(json[@"tintColor"]);
+    if (tc.length) self.tintColor = tc;
+
+    // 解锁相关：requiresUnlock / locked
     id ru = json[@"requiresUnlock"] ?: json[@"locked"];
     if ([ru isKindOfClass:[NSNumber class]]) self.requiresUnlock = [ru boolValue];
+    if ([ru isKindOfClass:[NSString class]]) self.requiresUnlock = [(NSString *)ru boolValue];
 
     NSString *uu = RSStr2(json[@"unlockURL"]);
     if (uu.length) self.unlockURL = uu;
 
+    // 应用列表：apps / packages / items
     NSArray *rawApps = nil;
     for (NSString *k in @[@"apps", @"packages", @"items"]) {
         id v = json[k];
@@ -61,36 +73,29 @@ static NSString *RSStr2(id v) {
         if (it) [list addObject:it];
     }
     self.apps = list;
+    return (NSInteger)list.count;
 }
 
 - (NSDictionary *)toDictionary {
     NSMutableArray *arr = [NSMutableArray array];
     for (RSAppItem *a in self.apps) {
-        [arr addObject:@{
-            @"name": a.name ?: @"",
-            @"bundleIdentifier": a.bundleIdentifier ?: @"",
-            @"version": a.version ?: @"",
-            @"size": @(a.size),
-            @"iconURL": a.iconURL ?: @"",
-            @"downloadURL": a.downloadURL ?: @"",
-            @"description": a.desc ?: @"",
-            @"developer": a.developer ?: @"",
-            @"category": a.category ?: @"",
-        }];
+        [arr addObject:[a toDictionary]];
     }
-    return @{
-        @"uid": self.uid ?: @"",
-        @"url": self.url ?: @"",
-        @"name": self.name ?: @"",
-        @"identifier": self.identifier ?: @"",
-        @"subtitle": self.subtitle ?: @"",
-        @"iconURL": self.iconURL ?: @"",
-        @"requiresUnlock": @(self.requiresUnlock),
-        @"unlockURL": self.unlockURL ?: @"",
-        @"isUnlocked": @(self.isUnlocked),
-        @"unlockToken": self.unlockToken ?: @"",
-        @"apps": arr,
-    };
+    NSMutableDictionary *d = [NSMutableDictionary dictionary];
+    d[@"uid"] = self.uid ?: @"";
+    d[@"url"] = self.url ?: @"";
+    d[@"name"] = self.name ?: @"";
+    d[@"identifier"] = self.identifier ?: @"";
+    d[@"subtitle"] = self.subtitle ?: @"";
+    if (self.sourceURL) d[@"sourceURL"] = self.sourceURL;
+    if (self.iconURL) d[@"iconURL"] = self.iconURL;
+    if (self.tintColor) d[@"tintColor"] = self.tintColor;
+    d[@"requiresUnlock"] = @(self.requiresUnlock);
+    if (self.unlockURL) d[@"unlockURL"] = self.unlockURL;
+    d[@"isUnlocked"] = @(self.isUnlocked);
+    if (self.unlockToken) d[@"unlockToken"] = self.unlockToken;
+    d[@"apps"] = arr;
+    return d;
 }
 
 + (instancetype)fromDictionary:(NSDictionary *)d {
@@ -105,6 +110,8 @@ static NSString *RSStr2(id v) {
     r.identifier = RSStr2(d[@"identifier"]) ?: @"";
     r.subtitle = RSStr2(d[@"subtitle"]) ?: @"";
     r.iconURL = RSStr2(d[@"iconURL"]);
+    r.sourceURL = RSStr2(d[@"sourceURL"]);
+    r.tintColor = RSStr2(d[@"tintColor"]);
     r.unlockURL = RSStr2(d[@"unlockURL"]);
     r.unlockToken = RSStr2(d[@"unlockToken"]);
 
