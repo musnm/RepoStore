@@ -35,6 +35,7 @@
         _nameLabel = [UILabel new];
         _nameLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
         _nameLabel.textColor = [UIColor whiteColor];
+        _nameLabel.numberOfLines = 1;
         _nameLabel.translatesAutoresizingMaskIntoConstraints = NO;
         [_card addSubview:_nameLabel];
 
@@ -47,12 +48,15 @@
         _subLabel = [UILabel new];
         _subLabel.font = [UIFont systemFontOfSize:12];
         _subLabel.textColor = [RSTheme textSub];
+        _subLabel.numberOfLines = 1;
+        _subLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
         _subLabel.translatesAutoresizingMaskIntoConstraints = NO;
         [_card addSubview:_subLabel];
 
         _countLabel = [UILabel new];
         _countLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
         _countLabel.textColor = [RSTheme textSub];
+        _countLabel.numberOfLines = 1;
         _countLabel.translatesAutoresizingMaskIntoConstraints = NO;
         [_card addSubview:_countLabel];
 
@@ -63,6 +67,7 @@
         _chevron.translatesAutoresizingMaskIntoConstraints = NO;
         [_card addSubview:_chevron];
 
+        // ---- 布局：文字链两端钉死卡片，图标只约束"不超出"，让 cell 自适应高度 ----
         [NSLayoutConstraint activateConstraints:@[
             [_card.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:5],
             [_card.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-5],
@@ -73,27 +78,37 @@
             [_icon.centerYAnchor constraintEqualToAnchor:_card.centerYAnchor],
             [_icon.widthAnchor constraintEqualToConstant:54],
             [_icon.heightAnchor constraintEqualToConstant:54],
-
-            [_nameLabel.leadingAnchor constraintEqualToAnchor:_icon.trailingAnchor constant:12],
-            [_nameLabel.topAnchor constraintEqualToAnchor:_icon.topAnchor constant:2],
-
-            [_lockView.leadingAnchor constraintEqualToAnchor:_nameLabel.trailingAnchor constant:5],
-            [_lockView.centerYAnchor constraintEqualToAnchor:_nameLabel.centerYAnchor],
-            [_lockView.widthAnchor constraintEqualToConstant:11],
-            [_lockView.heightAnchor constraintEqualToConstant:11],
-
-            [_subLabel.leadingAnchor constraintEqualToAnchor:_nameLabel.leadingAnchor],
-            [_subLabel.topAnchor constraintEqualToAnchor:_nameLabel.bottomAnchor constant:3],
-            [_subLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_chevron.leadingAnchor constant:-8],
-
-            [_countLabel.leadingAnchor constraintEqualToAnchor:_nameLabel.leadingAnchor],
-            [_countLabel.topAnchor constraintEqualToAnchor:_subLabel.bottomAnchor constant:4],
-            [_countLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_chevron.leadingAnchor constant:-8],
+            [_icon.topAnchor constraintGreaterThanOrEqualToAnchor:_card.topAnchor constant:12],
+            [_icon.bottomAnchor constraintLessThanOrEqualToAnchor:_card.bottomAnchor constant:-12],
 
             [_chevron.trailingAnchor constraintEqualToAnchor:_card.trailingAnchor constant:-14],
             [_chevron.centerYAnchor constraintEqualToAnchor:_card.centerYAnchor],
             [_chevron.widthAnchor constraintEqualToConstant:12],
             [_chevron.heightAnchor constraintEqualToConstant:18],
+
+            // 名字
+            [_nameLabel.leadingAnchor constraintEqualToAnchor:_icon.trailingAnchor constant:12],
+            [_nameLabel.topAnchor constraintEqualToAnchor:_card.topAnchor constant:14],
+            [_nameLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_chevron.leadingAnchor constant:-10],
+
+            // 锁图标紧跟名字
+            [_lockView.leadingAnchor constraintEqualToAnchor:_nameLabel.trailingAnchor constant:5],
+            [_lockView.centerYAnchor constraintEqualToAnchor:_nameLabel.centerYAnchor],
+            [_lockView.widthAnchor constraintEqualToConstant:11],
+            [_lockView.heightAnchor constraintEqualToConstant:11],
+            [_lockView.trailingAnchor constraintLessThanOrEqualToAnchor:_chevron.leadingAnchor constant:-8],
+
+            // 副标题
+            [_subLabel.leadingAnchor constraintEqualToAnchor:_nameLabel.leadingAnchor],
+            [_subLabel.topAnchor constraintEqualToAnchor:_nameLabel.bottomAnchor constant:3],
+            [_subLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_chevron.leadingAnchor constant:-10],
+
+            // 数量
+            [_countLabel.leadingAnchor constraintEqualToAnchor:_nameLabel.leadingAnchor],
+            [_countLabel.topAnchor constraintEqualToAnchor:_subLabel.bottomAnchor constant:3],
+            [_countLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_chevron.leadingAnchor constant:-10],
+            // 关键：底端钉死卡片
+            [_countLabel.bottomAnchor constraintEqualToAnchor:_card.bottomAnchor constant:-14],
         ]];
     }
     return self;
