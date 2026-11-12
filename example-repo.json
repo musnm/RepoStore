@@ -2,29 +2,45 @@
   "name": "示例软件源",
   "identifier": "com.example.demo",
   "subtitle": "RepoStore 示例源 · 用于测试",
+  "tintColor": "5B7CFA",
   "requiresUnlock": false,
+  "unlockURL": "",
   "apps": [
     {
       "name": "示例下载器",
       "bundleIdentifier": "com.example.downloader",
       "version": "1.2.0",
+      "versionDate": "2024-11-01",
       "size": 5242880,
+      "type": 1,
       "iconURL": "",
+      "tintColor": "5B7CFA",
       "downloadURL": "https://example.com/apps/downloader.ipa",
-      "description": "这是一个示例条目，用来演示源 JSON 的结构。把 downloadURL 换成你自己的 IPA 直链即可。",
-      "developer": "Example",
-      "category": "工具"
+      "localizedDescription": "这是一个示例条目，用来演示源 JSON 的结构。把 downloadURL 换成你自己的 IPA 直链即可。\n分类：工具",
+      "developerName": "Example"
     },
     {
       "name": "示例音乐播放器",
       "bundleIdentifier": "com.example.music",
       "version": "2.0.1",
+      "versionDate": "2024-10-20",
       "size": 12582912,
+      "type": 1,
       "iconURL": "",
+      "tintColor": "9B6BFF",
       "downloadURL": "https://example.com/apps/music.ipa",
-      "description": "第二个示例条目。",
-      "developer": "Example",
-      "category": "音乐"
+      "localizedDescription": "第二个示例条目。\n分类：音乐",
+      "developerName": "Example"
+    },
+    {
+      "name": "源公告：更新说明",
+      "bundleIdentifier": "com.example.announcement",
+      "version": "1.0",
+      "size": 0,
+      "type": 1,
+      "downloadURL": "",
+      "localizedDescription": "size 为 0 或没有 downloadURL 的条目，会被识别为公告，界面上不显示下载按钮。",
+      "developerName": "Example"
     }
   ]
 }
