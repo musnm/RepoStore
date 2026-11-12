@@ -1,0 +1,30 @@
+{
+  "name": "示例软件源",
+  "identifier": "com.example.demo",
+  "subtitle": "RepoStore 示例源 · 用于测试",
+  "requiresUnlock": false,
+  "apps": [
+    {
+      "name": "示例下载器",
+      "bundleIdentifier": "com.example.downloader",
+      "version": "1.2.0",
+      "size": 5242880,
+      "iconURL": "",
+      "downloadURL": "https://example.com/apps/downloader.ipa",
+      "description": "这是一个示例条目，用来演示源 JSON 的结构。把 downloadURL 换成你自己的 IPA 直链即可。",
+      "developer": "Example",
+      "category": "工具"
+    },
+    {
+      "name": "示例音乐播放器",
+      "bundleIdentifier": "com.example.music",
+      "version": "2.0.1",
+      "size": 12582912,
+      "iconURL": "",
+      "downloadURL": "https://example.com/apps/music.ipa",
+      "description": "第二个示例条目。",
+      "developer": "Example",
+      "category": "音乐"
+    }
+  ]
+}
