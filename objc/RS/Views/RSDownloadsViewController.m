@@ -137,3 +137,222 @@ static NSString *const kCellId = @"download";
 }
 
 @end
+
+@interface RSDownloadsViewController () <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, strong) UITableView *table;
+@property (nonatomic, strong) UIView *emptyView;
+@property (nonatomic, strong) NSArray<RSDownloadRecord *> *items;
+@property (nonatomic, strong) CADisplayLink *ticker;
+@end
+
+@implementation RSDownloadsViewController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"下载";
+    self.view.backgroundColor = [RSTheme bg];
+
+    self.navigationItem.rightBarButtonItem =
+    [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                                                  target:self
+                                                  action:@selector(close)];
+
+    self.table = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
+    self.table.translatesAutoresizingMaskIntoConstraints = NO;
+    self.table.backgroundColor = [RSTheme bg];
+    self.table.separatorStyle = UITableViewCellSeparatorStyleNone;
+    self.table.dataSource = self;
+    self.table.delegate = self;
+    self.table.contentInset = UIEdgeInsetsMake(8, 0, 24, 0);
+    self.table.rowHeight = UITableViewAutomaticDimension;
+    self.table.estimatedRowHeight = 84;
+    [self.table registerClass:[RSDownloadCell class] forCellReuseIdentifier:kCellId];
+    [self.view addSubview:self.table];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.table.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+        [self.table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.table.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+    ]];
+
+    [self buildEmptyView];
+
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(reload)
+                                                 name:RSDownloadsChangedNotification
+                                               object:nil];
+    [self reload];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self reload];
+    [self startTicker];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [self stopTicker];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [self stopTicker];
+}
+
+- (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }
+
+#pragma mark - 刷新
+
+- (void)reload {
+    self.items = [[RSStore shared] downloadRecords];
+    [self.table reloadData];
+    self.emptyView.hidden = self.items.count > 0;
+    self.table.hidden = (self.items.count == 0);
+    // 有记录就轮询进度（是否完成交给 tick 判断）
+    if (self.items.count > 0) [self startTicker]; else [self stopTicker];
+}
+
+- (void)startTicker {
+    if (self.ticker) return;
+    // 只要有记录就轮询：之前要求"存在未完成项"才启动，
+    // 而刚点下载时记录可能还没落到 downloadRecords 里 → 定时器不启动 → 进度恒为 0。
+    if (self.items.count == 0) return;
+    self.ticker = [CADisplayLink displayLinkWithTarget:self selector:@selector(tick)];
+    self.ticker.preferredFramesPerSecond = 10;
+    [self.ticker addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+}
+
+- (void)stopTicker {
+    [self.ticker invalidate];
+    self.ticker = nil;
+}
+
+- (void)tick {
+    for (UITableViewCell *cell in self.table.visibleCells) {
+        NSIndexPath *ip = [self.table indexPathForCell:cell];
+        if (!ip || ip.row >= (NSInteger)self.items.count) continue;
+        if (![cell isKindOfClass:[RSDownloadCell class]]) continue;
+        RSDownloadRecord *r = self.items[ip.row];
+        if (r.finished) continue;
+        double p = [[RSStore shared] currentProgressForItemId:r.itemId];
+        [(RSDownloadCell *)cell configureWithRecord:r progress:p];
+        // 若该条目已不在下载中且记录仍是未完成，说明失败并在新记录里被移除，触发一次重载
+        if (p < 0) { [self reload]; return; }
+    }
+}
+
+#pragma mark - 空态
+
+- (void)buildEmptyView {
+    UIView *v = [UIView new];
+    v.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIImageView *icon = [UIImageView new];
+    icon.translatesAutoresizingMaskIntoConstraints = NO;
+    icon.image = [UIImage systemImageNamed:@"arrow.down.circle"];
+    icon.tintColor = [RSTheme accent];
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+
+    UILabel *title = [UILabel new];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    title.text = @"还没有下载";
+    title.font = [UIFont systemFontOfSize:19 weight:UIFontWeightBold];
+    title.textColor = [UIColor whiteColor];
+    title.textAlignment = NSTextAlignmentCenter;
+
+    UILabel *sub = [UILabel new];
+    sub.translatesAutoresizingMaskIntoConstraints = NO;
+    sub.text = @"在源里点开应用并下载，文件会出现在这里";
+    sub.font = [UIFont systemFontOfSize:13];
+    sub.textColor = [RSTheme textSub];
+    sub.textAlignment = NSTextAlignmentCenter;
+    sub.numberOfLines = 0;
+
+    [v addSubview:icon];
+    [v addSubview:title];
+    [v addSubview:sub];
+    [self.view addSubview:v];
+    self.emptyView = v;
+
+    [NSLayoutConstraint activateConstraints:@[
+        [v.centerXAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.centerXAnchor],
+        [v.centerYAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.centerYAnchor constant:-60],
+        [v.widthAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.widthAnchor constant:-60],
+
+        [icon.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
+        [icon.topAnchor constraintEqualToAnchor:v.topAnchor],
+        [icon.widthAnchor constraintEqualToConstant:70],
+        [icon.heightAnchor constraintEqualToConstant:70],
+
+        [title.topAnchor constraintEqualToAnchor:icon.bottomAnchor constant:16],
+        [title.leadingAnchor constraintEqualToAnchor:v.leadingAnchor],
+        [title.trailingAnchor constraintEqualToAnchor:v.trailingAnchor],
+
+        [sub.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:8],
+        [sub.leadingAnchor constraintEqualToAnchor:v.leadingAnchor],
+        [sub.trailingAnchor constraintEqualToAnchor:v.trailingAnchor],
+    ]];
+}
+
+#pragma mark - Table
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return self.items.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    RSDownloadCell *cell = [tableView dequeueReusableCellWithIdentifier:kCellId forIndexPath:indexPath];
+    RSDownloadRecord *r = self.items[indexPath.row];
+    double p = r.finished ? 1 : [[RSStore shared] currentProgressForItemId:r.itemId];
+    [cell configureWithRecord:r progress:p];
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.row >= (NSInteger)self.items.count) return;
+    RSDownloadRecord *r = self.items[indexPath.row];
+
+    if (!r.finished) {
+        [RSInstallService toast:@"还在下载中" in:self];
+        return;
+    }
+    NSURL *url = [NSURL fileURLWithPath:r.filePath];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:r.filePath]) {
+        [RSInstallService toast:@"文件已丢失" in:self];
+        return;
+    }
+    // 分享菜单：可发到巨魔、微信、QQ 或存到文件
+    [RSInstallService shareFile:url from:self];
+}
+
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
+trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.row >= (NSInteger)self.items.count) return nil;
+    RSDownloadRecord *r = self.items[indexPath.row];
+
+    UIContextualAction *del = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive
+                                                                      title:@"删除"
+                                                                    handler:^(UIContextualAction *a, UIView *v, void (^done)(BOOL)) {
+        @try {
+            if (!r.finished) {
+                // 下载中：取消并彻底清理
+                [[RSStore shared] cancelDownloadForItemId:r.itemId];
+            } else {
+                [[RSStore shared] removeDownloadRecord:r];
+            }
+        } @finally {
+            if (done) done(YES);
+        }
+    }];
+    del.backgroundColor = [UIColor colorWithRed:1 green:0.27 blue:0.27 alpha:1];
+
+    if (!r.finished) {
+        del.title = @"取消";
+    }
+
+    return [UISwipeActionsConfiguration configurationWithActions:@[del]];
+}
+
+@end
