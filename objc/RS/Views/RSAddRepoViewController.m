@@ -5,7 +5,6 @@
 
 @interface RSAddRepoViewController ()
 @property (nonatomic, strong) UITextField *urlField;
-@property (nonatomic, strong) UITextField *codeField;
 @property (nonatomic, strong) UIButton *addBtn;
 @end
 
@@ -89,16 +88,13 @@
 
     UILabel *sub = [UILabel new];
     sub.translatesAutoresizingMaskIntoConstraints = NO;
-    sub.text = @"粘贴源地址或加密源串，支持 JSON / ESign 格式";
+    sub.text = @"粘贴源地址，支持 JSON 格式源";
     sub.font = [UIFont systemFontOfSize:13];
     sub.textColor = [RSTheme textSub];
     sub.textAlignment = NSTextAlignmentCenter;
 
     UILabel *urlTip = [self labelWithText:@"源地址"];
     self.urlField = [self fieldWithPlaceholder:@"https://example.com/repo.json" secure:NO];
-
-    UILabel *codeTip = [self labelWithText:@"解锁码（选填）"];
-    self.codeField = [self fieldWithPlaceholder:@"如果该源需要解锁，在这里输入" secure:YES];
 
     self.addBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.addBtn.translatesAutoresizingMaskIntoConstraints = NO;
@@ -110,8 +106,7 @@
     self.addBtn.enabled = NO;
     [self.addBtn addTarget:self action:@selector(add) forControlEvents:UIControlEventTouchUpInside];
 
-    for (UIView *v in @[headIcon, title, sub, urlTip, self.urlField,
-                        codeTip, self.codeField, self.addBtn]) {
+    for (UIView *v in @[headIcon, title, sub, urlTip, self.urlField, self.addBtn]) {
         [root addSubview:v];
     }
 
@@ -142,15 +137,7 @@
         [self.urlField.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-24],
         [self.urlField.heightAnchor constraintEqualToConstant:50],
 
-        [codeTip.topAnchor constraintEqualToAnchor:self.urlField.bottomAnchor constant:20],
-        [codeTip.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:24],
-
-        [self.codeField.topAnchor constraintEqualToAnchor:codeTip.bottomAnchor constant:8],
-        [self.codeField.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:24],
-        [self.codeField.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-24],
-        [self.codeField.heightAnchor constraintEqualToConstant:50],
-
-        [self.addBtn.topAnchor constraintEqualToAnchor:self.codeField.bottomAnchor constant:28],
+        [self.addBtn.topAnchor constraintEqualToAnchor:self.urlField.bottomAnchor constant:28],
         [self.addBtn.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:24],
         [self.addBtn.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-24],
         [self.addBtn.heightAnchor constraintEqualToConstant:52],
@@ -200,26 +187,21 @@
     }
 
     NSString *u = raw;
-    if (![u.lowercaseString hasPrefix:@"http"] && ![u.lowercaseString hasPrefix:@"file://"]) {
+    if (![u.lowercaseString hasPrefix:@"http"]) {
         u = [@"https://" stringByAppendingString:u];
     }
 
     repo = [[RSStore shared] addRepoWithURL:u];
     if (repo) {
         [[NSNotificationCenter defaultCenter] postNotificationName:@"RSReposChanged" object:nil];
+        // 等首次刷新完成再关闭，避免用户立刻进源看到空列表
         [[RSStore shared] refreshRepo:repo completion:^(BOOL ok, NSString *err) {
             [[NSNotificationCenter defaultCenter] postNotificationName:@"RSReposChanged" object:nil];
+            (void)ok; (void)err;
         }];
     }
 
-    NSString *code = [self.codeField.text stringByTrimmingCharactersInSet:
-                      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-
     [self dismissViewControllerAnimated:YES completion:nil];
-
-    if (repo && code.length > 0) {
-        [[RSStore shared] unlockRepo:repo code:code completion:^(BOOL ok, NSString *msg) {}];
-    }
 }
 
 /// 把内联 JSON 源写成临时文件，返回 file:// URL
