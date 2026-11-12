@@ -8,3 +8,7 @@ Payload/
 # IPA 产物不入库，请走 GitHub Release 或本地构建
 *.ipa
 !releases/*.ipa
+
+# ESign 解密密钥：由 tools/gen_esign_key.py 从上游重建，不随仓库分发
+RS/Models/RSEsignKey.h
+objc/RS/Models/RSEsignKey.h
