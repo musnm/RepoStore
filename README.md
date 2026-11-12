@@ -7,7 +7,7 @@ iOS 第三方软件源客户端（Objective-C + UIKit），支持自定义 JSON 
 ## 功能
 
 - **自定义源**：粘贴 JSON 源地址即可添加，兼容「轻松签 / 全能签」的 `Source.json` 字段。
-- **加密源**：识别 `source[base64]`（ESign）、含 `[K$]`/`[M$]` 分隔的、以及普通 base64 源。**注意**：ESign 解密需要自备密钥头文件（见下方「构建」）。
+- **加密源**：识别 `source[base64]`（ESign）、含 `[K$]`/`[M$]` 分隔的、以及普通 base64 源。ESign 密钥由构建脚本自动获取，见下方「构建」。
 - **解锁码**：完全由源自己声明的 `unlockURL` 决定，App 不内置任何卡密；解锁后令牌随请求头 `Authorization` / `X-Unlock-Token` 透传。
 - **下载管理**：后台下载、实时进度、断点续传、取消清理、下载记录持久化。
 - **安装 / 分享**：分享面板（已剔除 AirDrop，规避 TrollStore 签名应用在 AirDrop 图标渲染时的崩溃）、`apple-magnifier://` 直装。
@@ -43,6 +43,9 @@ objc/
 │       ├── RSRepoCell.m / RSAppCell.m
 │       └── RSIconView.{h,m}
 └── RS/Resources/             # Info.plist、Assets.xcassets
+
+tools/
+└── gen_esign_key.py          # 从上游重建 ESign 密钥头文件
 ```
 
 ## 构建
@@ -51,25 +54,35 @@ objc/
 
 - Theos 工具链（`arm64-apple-darwin14-clang`）与 iPhoneOS SDK
 - `ldid`（伪签名）
+- `python3`（仅在需要生成 ESign 密钥时用到）
 
-**必须先自备 `objc/RS/Models/RSEsignKey.h`**，它包含第三方 ESign 解密密钥表，出于授权原因未随仓库分发。缺该文件时 `RSDeobfuscator.m` 会被跳过编译，ESign 加密源不可用，其余功能不受影响。
-
-该头文件需提供：
-
-```objc
-extern const unsigned char rs_esign_key[];
-#define RS_ESIGN_KEY_LEN  /* key 字节数 */
-```
-
-参考实现：Nyasami/Ksign — `AltSourceKit/Utilities/Key/EsignSourceKey.swift`
-
-然后：
+### 一条命令
 
 ```sh
 cd objc
-sh build.sh
+sh build.sh              # 注意用 sh，脚本未置可执行位时直接 ./build.sh 会 Permission denied
 # 产物：objc/build/RepoStore.ipa
 ```
+
+### 关于 ESign 密钥（RSEsignKey.h）
+
+`objc/RS/Models/RSEsignKey.h` 是 ESign 源的解密密钥表（5055 字节），**不随仓库分发**（`*.gitignore` 已忽略），由 `tools/gen_esign_key.py` 从公开上游确定性重建：
+
+```sh
+# 手动生成（build.sh 在文件缺失时会自动执行这一步）
+python3 tools/gen_esign_key.py
+
+# 校验已生成的文件
+python3 tools/gen_esign_key.py --check
+```
+
+- 密钥来源：**Nyasami/Ksign**（GPL-3.0）— `AltSourceKit/Sources/AltSourceKit/Utilities/Key/EsignSourceKey.swift`
+- 重建结果与原文件**逐字节一致**（已验证，5055 字节）
+- 离线场景可用 `--local <EsignSourceKey.swift>` 指定本地副本
+
+所以**删掉工作区、换机器、重新 clone 都能完整编回**：`build.sh` 发现缺文件会自动调用脚本生成，不需要任何手工保管的密钥副本。
+
+若网络不可达且没有 key 文件，构建会给出警告并跳过 ESign 支持，其余功能不受影响。
 
 ## 源格式
 
@@ -93,4 +106,4 @@ sh build.sh
 
 ## 许可
 
-仅供学习交流。请勿用于分发侵犯版权的内容。
+仅供学习交流。请勿用于分发侵犯版权的内容。ESign 密钥数据版权归其原作者（Nyasami/Ksign，GPL-3.0）。
