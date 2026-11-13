@@ -1,6 +1,7 @@
 # RepoStore
 
-iOS 第三方软件源客户端（Objective-C + UIKit），支持自定义 JSON 源、ESign 加密源、解锁码、IPA 下载与 TrollStore 安装。
+iOS 第三方软件源客户端（Objective-C + UIKit），支持自定义 JSON 源、ESign 加密源、、IPA 下载。
+因为偶尔有时候好奇那些软件源内有什么我找不到的资源，但是导入软件源大部分都需要轻松签全能签这种工具，对于我这种有巨魔的人来说感觉挺讨厌的，我又不需要那些签名功能，就只想安静的下载资源，所以有了这个只有导入源和下载功能的工具。
 
 > 当前实现语言为 **Objective-C**（早前的 SwiftUI 版本已不在主分支）。
 
