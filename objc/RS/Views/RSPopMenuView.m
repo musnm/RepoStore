@@ -133,7 +133,6 @@ static const CGFloat kArrowHalf   = 9.0;
 
 - (void)buildRowsUpward:(BOOL)upward anchorMidX:(CGFloat)anchorMidX {
     CGFloat W = kMenuWidth;
-    CGFloat H = CGRectGetHeight(self.panel.bounds);
     CGFloat bodyTop = upward ? 0 : kArrowHeight;
 
     [self drawBubbleUpward:upward anchorMidX:anchorMidX];
