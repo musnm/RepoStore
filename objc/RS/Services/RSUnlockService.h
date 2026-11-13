@@ -12,9 +12,6 @@ typedef void (^RSUnlockCompletion)(BOOL ok, NSString *_Nullable token, NSString 
            forRepo:(RSRepo *)repo
         completion:(RSUnlockCompletion)done;
 
-/// 内置卡密表
-+ (NSSet<NSString *> *)localCodes;
-
 @end
 
 NS_ASSUME_NONNULL_END
