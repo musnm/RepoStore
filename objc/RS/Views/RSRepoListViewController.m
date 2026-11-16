@@ -97,21 +97,21 @@
     icon.translatesAutoresizingMaskIntoConstraints = NO;
 
     UILabel *title = [[UILabel alloc] init];
-    title.text = @"还没有软件源";
+    title.text = @"还没有添加源";
     title.textColor = [UIColor whiteColor];
     title.font = [UIFont boldSystemFontOfSize:20];
     title.textAlignment = NSTextAlignmentCenter;
     title.translatesAutoresizingMaskIntoConstraints = NO;
 
     UILabel *sub = [[UILabel alloc] init];
-    sub.text = @"添加一个源，开始浏览应用";
+    sub.text = @"添加一个源，浏览插件与应用";
     sub.textColor = [[UIColor whiteColor] colorWithAlphaComponent:0.5];
     sub.font = [UIFont systemFontOfSize:15];
     sub.textAlignment = NSTextAlignmentCenter;
     sub.translatesAutoresizingMaskIntoConstraints = NO;
 
     UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
-    [btn setTitle:@"添加软件源" forState:UIControlStateNormal];
+    [btn setTitle:@"添加源" forState:UIControlStateNormal];
     [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     btn.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
     btn.backgroundColor = [RSTheme accent];
@@ -175,7 +175,7 @@
     if (self.popMenu) { [self dismissMenu]; return; }
 
     NSArray *items = @[
-        @{RSPopMenuItemKeyTitle: @"添加软件源", RSPopMenuItemKeySymbol: @"plus"},
+        @{RSPopMenuItemKeyTitle: @"添加源", RSPopMenuItemKeySymbol: @"plus"},
         @{RSPopMenuItemKeyTitle: @"下载",       RSPopMenuItemKeySymbol: @"arrow.down.circle"},
     ];
 
@@ -297,7 +297,6 @@
     UIContextualAction *refresh = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal
                                                                          title:@"刷新"
                                                                        handler:^(UIContextualAction *a, UIView *v, void (^done)(BOOL)) {
-        __strong typeof(weakSelf) s = weakSelf;
         [[RSStore shared] refreshRepoByUID:r.uid completion:^(BOOL ok, NSString *err) {
             __strong typeof(weakSelf) ss = weakSelf;
             if (ss) [ss onReposChanged];
