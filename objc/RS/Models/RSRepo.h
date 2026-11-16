@@ -31,6 +31,18 @@ NS_ASSUME_NONNULL_BEGIN
 /// 用服务器返回的 JSON 更新自身；返回识别到的应用数
 - (NSInteger)applyJSON:(NSDictionary *)json;
 
+/// 用 APT 源（Packages）解析出的条目更新自身；返回识别到的应用数
+- (NSInteger)applyAPTItems:(NSArray<RSAppItem *> *)items;
+
+/// 插件数量（deb 包）
+- (NSInteger)pluginCount;
+
+/// 应用/资源数量（非 deb）
+- (NSInteger)appOnlyCount;
+
+/// 形如 "12 个插件" / "12 个插件 · 3 个应用" 的统计文案
+- (NSString *)countSummaryText;
+
 - (NSDictionary *)toDictionary;
 + (nullable instancetype)fromDictionary:(NSDictionary *)dict;
 
