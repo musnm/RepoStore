@@ -3,14 +3,12 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-typedef void (^RSUnlockCompletion)(BOOL ok, NSString *_Nullable token, NSString *_Nullable message);
-
 @interface RSUnlockService : NSObject
 
-/// 校验解锁码：有 unlockURL 走远程，失败回落本地表
+/// 校验解锁码，成功时回传 token
 + (void)verifyCode:(NSString *)code
            forRepo:(RSRepo *)repo
-        completion:(RSUnlockCompletion)done;
+        completion:(void (^)(BOOL ok, NSString * _Nullable token, NSString * _Nullable msg))completion;
 
 @end
 
