@@ -23,7 +23,7 @@
 
 + (void)verifyCode:(NSString *)code
            forRepo:(RSRepo *)repo
-        completion:(RSUnlockCompletion)done {
+        completion:(void (^)(BOOL ok, NSString * _Nullable token, NSString * _Nullable msg))done {
     NSString *c = [code stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (c.length == 0) {
         done(NO, nil, @"请输入解锁码");
