@@ -13,7 +13,7 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [RSTheme bg];
-    self.title = @"添加软件源";
+    self.title = @"添加源";
 
     self.navigationItem.leftBarButtonItem =
     [[UIBarButtonItem alloc] initWithTitle:@"取消" style:UIBarButtonItemStylePlain
@@ -81,14 +81,14 @@
 
     UILabel *title = [UILabel new];
     title.translatesAutoresizingMaskIntoConstraints = NO;
-    title.text = @"添加软件源";
+    title.text = @"添加源";
     title.font = [UIFont systemFontOfSize:19 weight:UIFontWeightBold];
     title.textColor = [UIColor whiteColor];
     title.textAlignment = NSTextAlignmentCenter;
 
     UILabel *sub = [UILabel new];
     sub.translatesAutoresizingMaskIntoConstraints = NO;
-    sub.text = @"粘贴源地址，支持 JSON 格式源";
+    sub.text = @"粘贴源地址，支持 JSON 与 APT 源";
     sub.font = [UIFont systemFontOfSize:13];
     sub.textColor = [RSTheme textSub];
     sub.textAlignment = NSTextAlignmentCenter;
