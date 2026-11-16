@@ -120,7 +120,7 @@
 
     _nameLabel.text = repo.name.length ? repo.name : @"未命名源";
     _subLabel.text = repo.subtitle.length ? repo.subtitle : repo.url;
-    _countLabel.text = [NSString stringWithFormat:@"%lu 个应用", (unsigned long)repo.apps.count];
+    _countLabel.text = [repo countSummaryText];
 
     if (repo.requiresUnlock) {
         _lockView.hidden = NO;
