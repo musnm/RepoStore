@@ -5,15 +5,19 @@
 
 #import "RSTranslateService.h"
 
-static NSString *const kBingTranslatorPage = @"https://www.bing.com/translator";
-static NSString *const kBingTranslateAPI  = @"https://www.bing.com/ttranslatev3?isVertical=1&&IG=1&IID=translator.5028";
+// 统一使用 cn.bing.com：www.bing.com 在国内网络下会 302 跳到 cn，
+// 而 token 与主机绑定、不能跨域使用，跳转后拿到的 token 调 API 会失败。
+static NSString *const kBingHost         = @"cn.bing.com";
+static NSString *const kBingTranslatorPage = @"https://cn.bing.com/translator";
+static NSString *const kBingTranslateAPI  = @"https://cn.bing.com/ttranslatev3?isVertical=1&&IG=1&IID=translator.5028";
 
-// Bing 单次请求实测可处理 900+ 字符，取保守值；超长时按句子边界切开
+// Bing 单次请求的文本上限偏保守取值，超长时按句子切开
 static const NSUInteger kMaxChunkChars = 900;
 
+// 必须用桌面 UA：iPhone UA 会被跳转到地域站点，拿不到出 token 的页面
 static NSString *const kUserAgent =
-    @"Mozilla/5.0 (iPhone; CPU iPhone OS 16_1_2 like Mac OS X) "
-    @"AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1";
+    @"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    @"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 @interface RSTranslateService ()
 @property (nonatomic, copy, nullable) NSString *token;
@@ -23,6 +27,7 @@ static NSString *const kUserAgent =
 @property (nonatomic, strong) NSURLSession *session;
 // 串行化 token 抓取，避免并发重复抓取
 @property (nonatomic, strong) dispatch_queue_t tokenQueue;
+@property (nonatomic, assign) BOOL fetchingToken;
 @end
 
 @implementation RSTranslateService
@@ -98,20 +103,116 @@ static NSString *const kUserAgent =
         return;
     }
 
-    [self ensureToken:^(NSError *tokenErr) {
-        if (tokenErr) {
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, tokenErr); });
+    // 主通道：Google 的 gtx 接口，无需 token，稳定性明显好于 Bing 的 token 方案
+    [self googleTranslate:src completion:^(NSString *result, NSString *lang, NSError *err) {
+        if (result.length) {
+            @synchronized (self.cache) { self.cache[src] = result; }
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(result, lang, nil); });
             return;
         }
-        [self translateChunks:src completion:^(NSString *result, NSString *lang, NSError *err) {
-            if (result.length) {
-                @synchronized (self.cache) {
-                    self.cache[src] = result;
-                }
+        // 备用通道：Bing（token 流程）
+        [self ensureToken:^(NSError *tokenErr) {
+            if (tokenErr) {
+                dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, err ?: tokenErr); });
+                return;
             }
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(result, lang, err); });
+            [self translateChunks:src completion:^(NSString *r2, NSString *l2, NSError *e2) {
+                if (r2.length) {
+                    @synchronized (self.cache) { self.cache[src] = r2; }
+                }
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    completion(r2, l2, r2.length ? nil : (e2 ?: err));
+                });
+            }];
         }];
     }];
+}
+
+#pragma mark - Google（主通道）
+
+/// Google 的 gtx 公开接口：无需 API Key / token，返回 JSON 数组。
+/// 结构：[[["译文","原文",...],["译文2","原文2",...]], null, "检测到的语言", ...]
+- (void)googleTranslate:(NSString *)text
+             completion:(void (^)(NSString *, NSString *, NSError *))completion {
+    // 长文本分段，避免 URL 过长被拒
+    NSArray<NSString *> *chunks = [self splitText:text limit:kMaxChunkChars];
+    if (chunks.count == 0) {
+        completion(nil, nil, [self errorWithCode:5 msg:@"简介为空"]);
+        return;
+    }
+
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    for (NSUInteger i = 0; i < chunks.count; i++) [parts addObject:@""];
+    __block NSInteger remaining = (NSInteger)chunks.count;
+    __block BOOL failed = NO;
+    __block NSString *detected = nil;
+
+    void (^done)(void) = ^{
+        if (failed) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completion([parts componentsJoinedByString:@"\n"], detected, nil);
+        });
+    };
+
+    for (NSInteger i = 0; i < (NSInteger)chunks.count; i++) {
+        NSString *q = [self urlEncode:chunks[i]];
+        NSString *urlStr = [NSString stringWithFormat:
+            @"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=%@", q];
+        NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlStr]];
+        req.timeoutInterval = 20;
+        [req setValue:kUserAgent forHTTPHeaderField:@"User-Agent"];
+
+        NSURLSessionDataTask *t = [self.session dataTaskWithRequest:req
+                                                 completionHandler:^(NSData *data,
+                                                                     NSURLResponse *resp,
+                                                                     NSError *e) {
+            if (failed) return;
+            if (e || data.length == 0) {
+                failed = YES;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    completion(nil, nil, [self errorWithCode:3 msg:@"翻译请求失败"]);
+                });
+                return;
+            }
+            id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            if (![obj isKindOfClass:[NSArray class]] || [(NSArray *)obj count] < 1) {
+                failed = YES;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    completion(nil, nil, [self errorWithCode:5 msg:@"翻译结果解析失败"]);
+                });
+                return;
+            }
+            NSArray *root = (NSArray *)obj;
+            // 语言
+            if (root.count > 2 && [root[2] isKindOfClass:[NSString class]]) {
+                detected = root[2];
+            }
+            // 译文分段拼起来
+            NSMutableString *buf = [NSMutableString string];
+            id first = root.firstObject;
+            if ([first isKindOfClass:[NSArray class]]) {
+                for (id seg in (NSArray *)first) {
+                    if ([seg isKindOfClass:[NSArray class]] && [(NSArray *)seg count] > 0) {
+                        id s = [(NSArray *)seg firstObject];
+                        if ([s isKindOfClass:[NSString class]]) [buf appendString:(NSString *)s];
+                    }
+                }
+            }
+            if (buf.length == 0) {
+                failed = YES;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    completion(nil, nil, [self errorWithCode:5 msg:@"翻译结果解析失败"]);
+                });
+                return;
+            }
+            @synchronized (parts) {
+                parts[i] = buf;
+            }
+            remaining--;
+            if (remaining == 0) done();
+        }];
+        [t resume];
+    }
 }
 
 #pragma mark - Token 获取
@@ -188,7 +289,7 @@ static NSString *const kUserAgent =
 
             self.key = key;
             self.token = token;
-            // ttl 约 3600000（毫秒）；留 5 分钟余量
+            // 留 5 分钟余量
             NSTimeInterval life = (NSTimeInterval)ttl / 1000.0;
             if (life < 600) life = (NSTimeInterval)ttl;   // 有些返回是秒
             self.tokenExpiry = [NSDate dateWithTimeIntervalSinceNow:MAX(life - 300, 60)];
@@ -215,7 +316,7 @@ static NSString *const kUserAgent =
     __block BOOL finished = NO;
 
     for (NSUInteger idx = 0; idx < chunks.count; idx++) {
-        [self requestChunk:chunks[idx]
+        [self requestChunk:chunks[idx] index:idx
                 completion:^(NSString *translated, NSString *lang, NSError *err) {
             @synchronized (results) {
                 if (translated.length) {
@@ -240,8 +341,9 @@ static NSString *const kUserAgent =
 }
 
 - (void)requestChunk:(NSString *)chunk
+               index:(NSUInteger)index
           completion:(void (^)(NSString *, NSString *, NSError *))completion {
-    // token 过期（ttl 到）时会失败，允许重试一次
+    // token 过期（ttl 到）时会失败，重试一次
     [self doRequestChunk:chunk retry:YES completion:completion];
 }
 
@@ -250,6 +352,7 @@ static NSString *const kUserAgent =
             completion:(void (^)(NSString *, NSString *, NSError *))completion {
 
     if (self.token.length == 0 || self.key.length == 0) {
+        // token 没了，先取
         [self ensureToken:^(NSError *e) {
             if (e) { completion(nil, nil, e); return; }
             [self doRequestChunk:chunk retry:NO completion:completion];
@@ -262,7 +365,7 @@ static NSString *const kUserAgent =
     req.HTTPMethod = @"POST";
     [req setValue:kUserAgent forHTTPHeaderField:@"User-Agent"];
     [req setValue:@"application/x-www-form-urlencoded" forHTTPHeaderField:@"Content-Type"];
-    [req setValue:@"https://www.bing.com/translator" forHTTPHeaderField:@"Referer"];
+    [req setValue:@"https://cn.bing.com/translator" forHTTPHeaderField:@"Referer"];
 
     NSString *body = [NSString stringWithFormat:
                       @"fromLang=auto-detect&to=zh-Hans&text=%@&token=%@&key=%@",
@@ -279,7 +382,7 @@ static NSString *const kUserAgent =
 
         NSHTTPURLResponse *http = (NSHTTPURLResponse *)resp;
         if ([http isKindOfClass:[NSHTTPURLResponse class]] && http.statusCode != 200) {
-            // 400/403 一般是 token 失效
+            // 403/400 一般是 token 失效
             if (allowRetry && (http.statusCode == 400 || http.statusCode == 403)) {
                 self.token = nil; self.key = nil; self.tokenExpiry = nil;
                 [self doRequestChunk:chunk retry:NO completion:completion];
@@ -291,7 +394,22 @@ static NSString *const kUserAgent =
         }
 
         id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-        if (![obj isKindOfClass:[NSArray class]] || [(NSArray *)obj count] == 0) {
+
+        // Bing 有两种返回形态：裸数组 [...]，或 {statusCode, items:[...]}。
+        // 只认一种就会出现"翻译结果解析失败"，这里两种都兼容。
+        NSArray *arr = nil;
+        if ([obj isKindOfClass:[NSArray class]]) {
+            arr = (NSArray *)obj;
+        } else if ([obj isKindOfClass:[NSDictionary class]]) {
+            NSDictionary *d = (NSDictionary *)obj;
+            if ([d[@"items"] isKindOfClass:[NSArray class]]) {
+                arr = d[@"items"];
+            } else if (d[@"translations"] || d[@"detectedLanguage"]) {
+                arr = @[d];
+            }
+        }
+
+        if (arr.count == 0) {
             if (allowRetry) {
                 self.token = nil; self.key = nil; self.tokenExpiry = nil;
                 [self doRequestChunk:chunk retry:NO completion:completion];
@@ -301,7 +419,7 @@ static NSString *const kUserAgent =
             return;
         }
 
-        NSDictionary *first = [(NSArray *)obj firstObject];
+        NSDictionary *first = arr.firstObject;
         if (![first isKindOfClass:[NSDictionary class]]) {
             completion(nil, nil, [self errorWithCode:5 msg:@"翻译结果解析失败"]);
             return;
@@ -341,7 +459,8 @@ static NSString *const kUserAgent =
     NSString *rest = text;
 
     while (rest.length > limit) {
-        NSString *head = [rest substringToIndex:limit];
+        NSRange window = NSMakeRange(0, limit);
+        NSString *head = [rest substringWithRange:window];
 
         // 在窗口内从后往前找段落/句子边界
         NSInteger cut = -1;
@@ -360,7 +479,8 @@ static NSString *const kUserAgent =
         }
         if (cut <= 0) cut = (NSInteger)limit;
 
-        [out addObject:[rest substringToIndex:(NSUInteger)cut]];
+        NSString *piece = [rest substringToIndex:(NSUInteger)cut];
+        [out addObject:piece];
         rest = [rest substringFromIndex:(NSUInteger)cut];
     }
     if (rest.length) [out addObject:rest];
