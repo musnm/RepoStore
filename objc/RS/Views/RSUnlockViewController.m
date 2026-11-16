@@ -105,7 +105,6 @@
     self.submitBtn.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
     self.submitBtn.backgroundColor = [RSTheme accent];
     self.submitBtn.layer.cornerRadius = 15;
-    self.submitBtn.imageEdgeInsets = UIEdgeInsetsMake(0, -6, 0, 6);
     [self.submitBtn addTarget:self action:@selector(submit) forControlEvents:UIControlEventTouchUpInside];
 
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
