@@ -9,6 +9,11 @@
 @property (nonatomic, strong) UITableView *table;
 @property (nonatomic, strong) NSArray<RSAppItem *> *filtered;
 @property (nonatomic, strong) UISearchController *search;
+/// 当前选中的分类（为空表示全部）
+@property (nonatomic, copy, nullable) NSString *selectedCategory;
+@property (nonatomic, strong) UIScrollView *categoryBar;
+/// 分类标签顺序，按钮 tag 即下标
+@property (nonatomic, strong) NSArray<NSString *> *categoryTitles;
 @end
 
 @implementation RSRepoDetailViewController
@@ -48,6 +53,7 @@
     self.definesPresentationContext = YES;
 
     [self applyFilter:@""];
+    [self buildCategoryBar];
 
     if (self.repo.requiresUnlock && !self.repo.isUnlocked) {
         [self showLockedOverlay];
@@ -119,19 +125,135 @@
 }
 
 - (void)applyFilter:(NSString *)q {
-    if (q.length == 0) {
-        self.filtered = self.repo.apps;
-    } else {
-        NSMutableArray *m = [NSMutableArray array];
-        for (RSAppItem *a in self.repo.apps) {
-            BOOL hit = [a.name localizedCaseInsensitiveContainsString:q] ||
-                       [a.bundleIdentifier localizedCaseInsensitiveContainsString:q] ||
-                       [a.developerName localizedCaseInsensitiveContainsString:q];
-            if (hit) [m addObject:a];
+    // 每次过滤都从 store 取最新的同一个源对象，
+    // 避免刷新后 repo 实例被替换、这里还抱着旧快照导致列表空白。
+    RSRepo *fresh = [[RSStore shared] repoWithUID:self.repo.uid];
+    if (fresh) self.repo = fresh;
+
+    NSArray<RSAppItem *> *all = self.repo.apps ?: @[];
+    NSMutableArray *m = [NSMutableArray array];
+    for (RSAppItem *a in all) {
+        // 分类标签筛选（如果有选中）
+        if (self.selectedCategory.length) {
+            if (![[self categoryOfItem:a] isEqualToString:self.selectedCategory]) continue;
         }
-        self.filtered = m;
+        if (q.length == 0) {
+            [m addObject:a];
+            continue;
+        }
+        BOOL hit = [a.name localizedCaseInsensitiveContainsString:q] ||
+                   [a.bundleIdentifier localizedCaseInsensitiveContainsString:q] ||
+                   [a.developerName localizedCaseInsensitiveContainsString:q];
+        if (hit) [m addObject:a];
     }
+    self.filtered = m;
     [self.table reloadData];
+}
+
+/// 构建分类筛选条：把源里所有 Section 汇总成横向滚动的标签。
+/// 分类来自 APT 的 Section 字段，是源自身声明的，Sileo 也按它分组。
+- (void)buildCategoryBar {
+    // 收集分类名 → 数量
+    NSMutableDictionary<NSString *, NSNumber *> *tally = [NSMutableDictionary dictionary];
+    for (RSAppItem *a in self.repo.apps) {
+        NSString *c = [self categoryOfItem:a];
+        if (c.length == 0) continue;
+        tally[c] = @([tally[c] integerValue] + 1);
+    }
+    if (tally.count == 0) {
+        self.table.tableHeaderView = nil;
+        self.categoryTitles = @[];
+        return;
+    }
+
+    // 按数量从多到少，主要分类排前面
+    NSArray<NSString *> *cats = [tally.allKeys sortedArrayUsingComparator:
+        ^NSComparisonResult(NSString *x, NSString *y) {
+            NSInteger cx = [tally[x] integerValue], cy = [tally[y] integerValue];
+            if (cx != cy) return cx > cy ? NSOrderedAscending : NSOrderedDescending;
+            return [x compare:y];
+        }];
+
+    // 顺序表：第 0 项固定是"全部"，按钮 tag 即其下标
+    NSMutableArray<NSString *> *titles = [NSMutableArray arrayWithObject:@"全部"];
+    [titles addObjectsFromArray:cats];
+    self.categoryTitles = titles;
+
+    CGFloat width = self.view.bounds.size.width;
+    CGFloat h = 44;
+
+    UIScrollView *bar = [[UIScrollView alloc] initWithFrame:CGRectMake(0, 0, width, h)];
+    bar.showsHorizontalScrollIndicator = NO;
+    bar.alwaysBounceHorizontal = YES;
+    bar.backgroundColor = [RSTheme bg];
+
+    CGFloat x = 12;
+    for (NSUInteger i = 0; i < titles.count; i++) {
+        NSString *t = titles[i];
+        NSInteger cnt = (i == 0) ? (NSInteger)self.repo.apps.count
+                                 : [tally[t] integerValue];
+        BOOL sel = (i == 0) ? (self.selectedCategory.length == 0)
+                            : [t isEqualToString:self.selectedCategory];
+
+        UIButton *b = [self categoryButtonWithTitle:t count:cnt selected:sel];
+        b.tag = (NSInteger)i;
+        b.frame = CGRectMake(x, (h - 28) / 2.0, b.frame.size.width, 28);
+
+        [bar addSubview:b];
+        x += b.frame.size.width + 8;
+    }
+
+    bar.contentSize = CGSizeMake(MAX(x + 4, width), h);
+    self.table.tableHeaderView = bar;   // 用 header 挂载，table 约束不必改
+    self.categoryBar = bar;
+}
+
+/// 生成一个分类标签按钮
+- (UIButton *)categoryButtonWithTitle:(NSString *)title
+                                count:(NSInteger)count
+                             selected:(BOOL)selected {
+    NSString *txt = [NSString stringWithFormat:@"%@ %ld", title, (long)count];
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+    b.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    [b setTitle:txt forState:UIControlStateNormal];
+    [b setTitleColor:selected ? [UIColor whiteColor] : [RSTheme textSub]
+            forState:UIControlStateNormal];
+    b.backgroundColor = selected ? [RSTheme accent]
+                                 : [[UIColor whiteColor] colorWithAlphaComponent:0.08];
+    b.layer.cornerRadius = 14;
+    // 用 sizeToFit 得到文字尺寸后左右各留 12pt 内边距
+    [b sizeToFit];
+    CGRect bf = b.frame;
+    bf.size.width += 24;
+    bf.size.height = 28;
+    b.frame = bf;
+
+    [b addTarget:self action:@selector(onCategoryTap:)
+        forControlEvents:UIControlEventTouchUpInside];
+    return b;
+}
+
+- (void)onCategoryTap:(UIButton *)sender {
+    if (sender.tag < 0 || sender.tag >= (NSInteger)self.categoryTitles.count) return;
+    NSString *c = self.categoryTitles[sender.tag];
+    self.selectedCategory = [c isEqualToString:@"全部"] ? nil : c;
+    [self applyFilter:self.search.searchBar.text ?: @""];
+    [self buildCategoryBar];
+}
+
+/// 取条目的分类名。APT 源的 Section 在解析时补进了描述（"分类：xxx"），
+/// 这里再兜一层：优先用 categoryName，否则从描述里提取。
+- (NSString *)categoryOfItem:(RSAppItem *)a {
+    if (a.categoryName.length) return a.categoryName;
+    NSString *d = a.localizedDescription ?: @"";
+    NSRange r = [d rangeOfString:@"分类："];
+    if (r.location != NSNotFound) {
+        NSString *tail = [d substringFromIndex:r.location + r.length];
+        NSRange nl = [tail rangeOfString:@"\n"];
+        if (nl.location != NSNotFound) tail = [tail substringToIndex:nl.location];
+        return [tail stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    }
+    return @"";
 }
 
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
