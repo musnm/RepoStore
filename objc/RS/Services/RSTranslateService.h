@@ -24,7 +24,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (instancetype)shared;
 
 /// 翻译一段文本到简体中文。
-/// @param text       原文
+/// @param text     原文
 /// @param completion 主线程回调。成功时 translated 非空、error 为 nil；失败时 translated 为 nil。
 - (void)translateToChinese:(NSString *)text
                 completion:(void (^)(NSString * _Nullable translated,
